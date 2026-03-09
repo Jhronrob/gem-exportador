@@ -94,13 +94,13 @@ Function ModeSelectionPage
     Abort
   ${EndIf}
 
-  ; Em upgrade interativo: se GemMode ja existe no registro, pular tambem
+  ; Em upgrade interativo: pre-seleciona o modo atual mas MOSTRA a pagina
+  ; para o usuario poder trocar (ex: servidor -> viewer)
   ReadRegStr $0 HKLM "Software\${APP_NAME}" "GemMode"
   ${If} $0 != ""
     StrCpy $GemMode $0
-    ; Ler IP existente do registro para viewer
     ReadRegStr $ServerIP HKLM "Software\${APP_NAME}" "ServerIP"
-    Abort
+    ; Nao faz Abort - continua e mostra a pagina pre-selecionada
   ${EndIf}
 
   nsDialogs::Create 1018
@@ -113,24 +113,33 @@ Function ModeSelectionPage
   ${NSD_CreateLabel} 0 0 100% 24u "Selecione o tipo de instalacao:"
   Pop $0
 
-  ; Radio: Servidor (padrao)
+  ; Radio: Servidor
   ${NSD_CreateRadioButton} 20u 30u 100% 12u "Servidor (app completo com processamento Inventor)"
   Pop $RadioServer
-  ${NSD_SetState} $RadioServer ${BST_CHECKED}
 
   ; Radio: Viewer
   ${NSD_CreateRadioButton} 20u 48u 100% 12u "Viewer (somente visualizacao, conecta em servidor remoto)"
   Pop $RadioViewer
 
+  ; Pre-seleciona conforme modo atual (ou servidor como padrao)
+  ${If} $GemMode == "viewer"
+    ${NSD_SetState} $RadioViewer ${BST_CHECKED}
+  ${Else}
+    ${NSD_SetState} $RadioServer ${BST_CHECKED}
+    StrCpy $GemMode "server"
+  ${EndIf}
+
   ; Label IP
   ${NSD_CreateLabel} 20u 72u 100% 12u "IP do servidor (somente para Viewer):"
   Pop $0
 
-  ; Input IP
-  ${NSD_CreateText} 20u 86u 200u 14u "192.168.2.121"
+  ; Input IP - pre-preenche com IP anterior ou padrao
+  ${If} $ServerIP != ""
+    ${NSD_CreateText} 20u 86u 200u 14u "$ServerIP"
+  ${Else}
+    ${NSD_CreateText} 20u 86u 200u 14u "192.168.2.121"
+  ${EndIf}
   Pop $InputIP
-
-  StrCpy $GemMode "server"
 
   nsDialogs::Show
 FunctionEnd
@@ -208,10 +217,7 @@ Section "Install"
   ; Instalacao interativa: gera .env conforme modo selecionado
   ; ============================================
 
-  ; Se .env ja existe em C:\gem-exportador (upgrade interativo), perguntar se deseja manter
-  IfFileExists "C:\gem-exportador\.env" 0 env_generate
-    MessageBox MB_YESNO|MB_ICONQUESTION "Configuracao existente encontrada.$\nDeseja manter a configuracao atual?" /SD IDYES IDYES env_done IDNO env_generate
-
+  ; Sempre regrava o .env conforme o modo escolhido na tela de selecao
   env_generate:
   StrCmp $GemMode "viewer" env_viewer env_server
 
