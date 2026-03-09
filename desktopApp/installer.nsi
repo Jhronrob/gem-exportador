@@ -1,5 +1,5 @@
 ; GemExportador NSIS Installer
-; PostgreSQL embutido no instalador - sem download em runtime
+; Banco de dados: PostgreSQL KSI em producao (192.168.1.152) - sem instalacao local
 
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
@@ -61,7 +61,7 @@ Page custom ModeSelectionPage ModeSelectionLeave
 ; Em silent mode (/S = auto-update): não roda o uninstaller antigo,
 ; apenas sobrescreve os arquivos. Isso evita que o uninstaller antigo
 ; (que não tem suporte a /SD) mostre MessageBox bloqueante.
-; Também preserva .env, PostgreSQL e config existente.
+; Também preserva .env e config existente.
 Function .onInit
   ${If} ${Silent}
     ; AUTO-UPDATE: ler config existente do registro e pular uninstall
@@ -198,7 +198,6 @@ Section "Install"
   ; ============================================
   ; Em silent mode (auto-update): PRESERVAR .env existente
   ; Não regenerar configuração — manter server/viewer, IP, banco, etc.
-  ; Também não re-executar setup-postgres.cmd (PostgreSQL já está instalado)
   ; ============================================
   ${If} ${Silent}
     DetailPrint "Atualizacao: preservando configuracao existente (.env)"
@@ -319,7 +318,6 @@ Section "Uninstall"
 
   ; ============================================
   ; Em silent mode (chamado durante auto-update):
-  ; - NAO parar PostgreSQL (continua rodando)
   ; - NAO perguntar sobre dados
   ; - NAO remover .env (preservar config)
   ; - Apenas remover binarios do app
@@ -331,9 +329,8 @@ Section "Uninstall"
     RMDir /r "$INSTDIR\scripts"
     Delete "$INSTDIR\${APP_NAME}.ico"
     Delete "$INSTDIR\launch.cmd"
-    Delete "$INSTDIR\setup-postgres.cmd"
     Delete "$INSTDIR\uninstall.exe"
-    ; NÃO remove .env, .registro, atalhos (novo instalador recria)
+    ; NÃO remove .env, atalhos (novo instalador recria)
     Goto uninstall_done
   ${EndIf}
 
@@ -341,42 +338,30 @@ Section "Uninstall"
   ; Desinstalacao interativa completa
   ; ============================================
 
-  ; Somente servidor: para o servico PostgreSQL
-  StrCmp $0 "viewer" skip_pg_stop
-    nsExec::ExecToLog 'net stop GemPostgreSQL'
-    nsExec::ExecToLog '"C:\gem-exportador\pgsql\bin\pg_ctl.exe" unregister -N GemPostgreSQL'
-  skip_pg_stop:
-
   ; Remove arquivos do app
   RMDir /r "$INSTDIR\app"
   RMDir /r "$INSTDIR\runtime"
   RMDir /r "$INSTDIR\scripts"
   Delete "$INSTDIR\${APP_NAME}.ico"
   Delete "$INSTDIR\launch.cmd"
-  Delete "$INSTDIR\setup-postgres.cmd"
-  Delete "$INSTDIR\.env"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
-  ; Somente servidor: pergunta se deseja remover dados (banco, logs, PostgreSQL)
-  ; Viewer NUNCA deve ter esta opcao — é instalado em muitas maquinas de usuarios
-  StrCmp $0 "viewer" skip_removedata
-    MessageBox MB_YESNO|MB_ICONQUESTION "Deseja remover TODOS os dados (banco de dados, logs, PostgreSQL)?" /SD IDNO IDYES removedata IDNO skip_removedata
+  ; Pergunta se deseja remover dados locais (logs, config)
+  ; Viewer: remove apenas logs
+  StrCmp $0 "viewer" remove_viewer_data remove_server_data
+
+  remove_server_data:
+    MessageBox MB_YESNO|MB_ICONQUESTION "Deseja remover os dados locais (logs e configuracoes em C:\gem-exportador)?" /SD IDNO IDYES removedata IDNO skip_removedata
     removedata:
       RMDir /r "C:\gem-exportador"
-  skip_removedata:
+    Goto skip_removedata
 
-  ; Viewer: remove apenas logs locais (nao banco, nao PostgreSQL)
-  StrCmp $0 "viewer" 0 skip_viewer_logs
+  remove_viewer_data:
     RMDir /r "C:\gem-exportador\logs"
     RMDir "C:\gem-exportador"
-  skip_viewer_logs:
 
-  ; Somente servidor: remove ODBC DSN
-  StrCmp $0 "viewer" skip_odbc
-    nsExec::ExecToLog 'powershell -Command "Remove-OdbcDsn -Name gem_exportador -DsnType System -Platform 32-bit -ErrorAction SilentlyContinue"'
-    nsExec::ExecToLog 'powershell -Command "Remove-OdbcDsn -Name gem_exportador -DsnType System -Platform 64-bit -ErrorAction SilentlyContinue"'
-  skip_odbc:
+  skip_removedata:
 
   ; Remove shortcuts
   Delete "$DESKTOP\${APP_NAME}.lnk"
