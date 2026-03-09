@@ -127,7 +127,7 @@ Function ModeSelectionPage
   Pop $0
 
   ; Input IP
-  ${NSD_CreateText} 20u 86u 200u 14u "192.168.1.66"
+  ${NSD_CreateText} 20u 86u 200u 14u "192.168.2.121"
   Pop $InputIP
 
   StrCpy $GemMode "server"
@@ -241,19 +241,12 @@ Section "Install"
 
   env_viewer:
     DetailPrint "Configurando modo VIEWER (servidor: $ServerIP)..."
-    ; Config em C:\gem-exportador\.env (editavel pelo usuario sem admin)
+    ; Viewer so precisa do URL do backend - nao conecta ao banco diretamente
     FileOpen $0 "C:\gem-exportador\.env" w
     FileWrite $0 'GEM_MODE=viewer$\r$\n'
     FileWrite $0 'SERVER_URL=http://$ServerIP:8080$\r$\n'
     FileWrite $0 'LOG_LEVEL=INFO$\r$\n'
     FileWrite $0 'LOG_DIR=C:\gem-exportador\logs$\r$\n'
-    FileWrite $0 '$\r$\n'
-    FileWrite $0 '# PostgreSQL (banco no servidor - nao usado pelo viewer)$\r$\n'
-    FileWrite $0 'DB_HOST=$ServerIP$\r$\n'
-    FileWrite $0 'DB_PORT=5432$\r$\n'
-    FileWrite $0 'DB_NAME=gem_jhonrob$\r$\n'
-    FileWrite $0 'DB_USER=ksi$\r$\n'
-    FileWrite $0 'DB_PASSWORD=ksi$\r$\n'
     FileClose $0
 
   env_done:

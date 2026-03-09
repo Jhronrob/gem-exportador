@@ -16,7 +16,7 @@ import model.DesenhoAutodesk
  */
 class DesenhoRepository(
     databaseDriverFactory: DatabaseDriverFactory
-) {
+) : IDesenhoRepository {
     private val database = GemDatabase(databaseDriverFactory.createDriver())
     private val queries = database.desenhoQueries
     private val json = Json { ignoreUnknownKeys = true }

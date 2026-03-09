@@ -11,8 +11,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.dp
 import data.ApiClient
-import data.DatabaseDriverFactory
-import data.DesenhoRepository
+import data.IDesenhoRepository
 import data.RealtimeClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -32,21 +31,18 @@ import util.VersionInfo
 import util.getCurrentDateTime
 import util.logToFile
 
-/**
- * Inicializa o banco SQLite local.
- * NÃO cria seed - os dados vêm do servidor via WebSocket.
- */
-private fun initializeSqlite(repository: DesenhoRepository) {
-    val path = getSqliteDatabasePath()
-    if (path != null) logToFile("INFO", "SQLite inicializado em $path")
+private fun logRepositoryInit(repository: IDesenhoRepository) {
+    val info = getSqliteDatabasePath()
+    if (info != null) logToFile("INFO", "Repositório: $info")
 }
 
 /**
- * App principal com dados do SQLite
+ * App principal. Viewer usa InMemoryDesenhoRepository (dados via WebSocket).
+ * Servidor usa DesenhoRepository (PostgreSQL direto).
  */
 @OptIn(FlowPreview::class)
 @Composable
-fun App(databaseDriverFactory: DatabaseDriverFactory) {
+fun App(repository: IDesenhoRepository) {
     val darkColorPalette = darkColors(
         primary = AppColors.Primary,
         primaryVariant = AppColors.PrimaryVariant,
@@ -54,8 +50,6 @@ fun App(databaseDriverFactory: DatabaseDriverFactory) {
         surface = AppColors.Surface
     )
     
-    // Repositório do banco de dados (SQLite local)
-    val repository = remember { DesenhoRepository(databaseDriverFactory) }
     val serverBaseUrl = getServerBaseUrl()
     val apiClient = if (serverBaseUrl != null) remember { ApiClient(serverBaseUrl) } else null
 
@@ -89,9 +83,8 @@ fun App(databaseDriverFactory: DatabaseDriverFactory) {
         }
     }
 
-    // Garante o registro inicial no SQLite (sempre; com servidor o WebSocket "initial" pode depois sobrescrever)
     LaunchedEffect(Unit) {
-        initializeSqlite(repository)
+        logRepositoryInit(repository)
     }
 
     // Estado dos desenhos (observando do banco local; atualiza sozinho quando WebSocket envia INSERT/UPDATE)

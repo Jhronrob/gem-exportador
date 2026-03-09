@@ -56,7 +56,7 @@ private sealed class PendingOp {
  */
 class RealtimeClient(
     private val serverUrl: String,
-    private val repository: DesenhoRepository
+    private val repository: IDesenhoRepository
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val client = HttpClient {

@@ -2,6 +2,9 @@ import androidx.compose.desktop.ui.tooling.preview.Preview
 import androidx.compose.runtime.Composable
 import config.DesktopConfig
 import data.DatabaseDriverFactory
+import data.DesenhoRepository
+import data.IDesenhoRepository
+import data.InMemoryDesenhoRepository
 import ui.components.UpdateState
 import util.AppVersion
 import util.UpdateChecker
@@ -12,7 +15,8 @@ import kotlin.system.exitProcess
 
 actual fun getPlatformName(): String = "Desktop"
 actual fun getServerBaseUrl(): String? = DesktopConfig.serverUrl
-actual fun getSqliteDatabasePath(): String? = DatabaseDriverFactory.getConnectionInfo()
+actual fun getSqliteDatabasePath(): String? =
+    if (DesktopConfig.isViewer) "viewer (in-memory)" else DatabaseDriverFactory.getConnectionInfo()
 
 actual suspend fun checkForUpdates(): VersionInfo? {
     return try {
@@ -163,15 +167,20 @@ actual fun restartApp() {
     }
 }
 
-@Composable 
+private fun createRepository(): IDesenhoRepository =
+    if (DesktopConfig.isViewer) {
+        InMemoryDesenhoRepository()
+    } else {
+        DesenhoRepository(DatabaseDriverFactory())
+    }
+
+@Composable
 fun MainView() {
-    val databaseDriverFactory = DatabaseDriverFactory()
-    App(databaseDriverFactory)
+    App(createRepository())
 }
 
 @Preview
 @Composable
 fun AppPreview() {
-    val databaseDriverFactory = DatabaseDriverFactory()
-    App(databaseDriverFactory)
+    App(InMemoryDesenhoRepository())
 }
