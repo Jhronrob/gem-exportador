@@ -61,7 +61,8 @@ fun DesenhosTable(
     actions: DesenhoActions = DesenhoActions(),
     updateAvailable: VersionInfo? = null,
     onUpdateClick: () -> Unit = {},
-    isRefreshing: Boolean = false
+    isRefreshing: Boolean = false,
+    onSettingsClick: () -> Unit = {}
 ) {
     // Estado para mostrar/ocultar concluídos
     var mostrarConcluidos by remember { mutableStateOf(false) }
@@ -201,7 +202,8 @@ fun DesenhosTable(
                 },
                 buscaAtiva = buscaAtiva,
                 hasDateFilter = searchDateDe.isNotBlank() || searchDateAte.isNotBlank(),
-                onDateFilterClick = { showDateFilter = true }
+                onDateFilterClick = { showDateFilter = true },
+                onSettingsClick = onSettingsClick
             )
             
             Divider(color = AppColors.Border, thickness = 1.dp)
@@ -276,7 +278,8 @@ private fun Toolbar(
     onClearSearch: () -> Unit = {},
     buscaAtiva: Boolean = false,
     hasDateFilter: Boolean = false,
-    onDateFilterClick: () -> Unit = {}
+    onDateFilterClick: () -> Unit = {},
+    onSettingsClick: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
@@ -386,6 +389,27 @@ private fun Toolbar(
             UpdateButton(onClick = onUpdateClick)
             Spacer(Modifier.width(8.dp))
         }
+
+        // Botão de configurações
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(AppColors.Surface)
+                .border(1.dp, AppColors.Border, RoundedCornerShape(6.dp))
+                .clickable(onClick = onSettingsClick)
+                .pointerHoverIcon(PointerIcon.Hand),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Settings,
+                contentDescription = "Configurações",
+                tint = AppColors.TextSecondary,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
         
         // Toggle concluídos (alinhado à direita)
         Row(

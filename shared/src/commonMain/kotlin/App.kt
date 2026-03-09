@@ -23,6 +23,7 @@ import model.DesenhoAutodesk
 import model.DesenhoStatus
 import ui.components.DesenhoActions
 import ui.components.DesenhosTable
+import ui.components.SettingsDialog
 import ui.components.UpdateDialog
 import ui.components.UpdateState
 import ui.theme.AppColors
@@ -102,6 +103,8 @@ fun App(databaseDriverFactory: DatabaseDriverFactory) {
 
     val scope = rememberCoroutineScope()
     
+    var showSettings by remember { mutableStateOf(false) }
+
     // === AUTO-UPDATE ===
     var updateAvailable by remember { mutableStateOf<VersionInfo?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
@@ -231,7 +234,8 @@ fun App(databaseDriverFactory: DatabaseDriverFactory) {
                 updateAvailable = if (updateDismissed) updateAvailable else null,
                 onUpdateClick = { showUpdateDialog = true },
                 modifier = Modifier.fillMaxSize(),
-                isRefreshing = isRefreshing
+                isRefreshing = isRefreshing,
+                onSettingsClick = { showSettings = true }
             )
         }
         
@@ -240,6 +244,11 @@ fun App(databaseDriverFactory: DatabaseDriverFactory) {
             focusRequester.requestFocus()
         }
         
+        // Dialog de configurações
+        if (showSettings) {
+            SettingsDialog(onDismiss = { showSettings = false })
+        }
+
         // Dialog de atualização
         if (showUpdateDialog && updateAvailable != null) {
             UpdateDialog(
@@ -281,3 +290,12 @@ expect suspend fun checkForUpdates(): VersionInfo?
 expect suspend fun performUpdate(version: VersionInfo, onStateChange: (UpdateState) -> Unit)
 /** Limpa arquivos de atualização antigos */
 expect fun cleanupOldUpdates()
+
+/** Retorna true se o app está em modo viewer */
+expect fun isViewerMode(): Boolean
+/** Lê os valores atuais das configurações editáveis */
+expect fun loadCurrentSettings(): Map<String, String>
+/** Salva as configurações no .env e retorna true se precisar reiniciar */
+expect fun saveSettings(values: Map<String, String>): Boolean
+/** Reinicia o processo do app */
+expect fun restartApp()

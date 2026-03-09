@@ -209,9 +209,9 @@ Section "Install"
   ; Instalacao interativa: gera .env conforme modo selecionado
   ; ============================================
 
-  ; Se .env ja existe (upgrade interativo), perguntar se deseja manter
-  IfFileExists "$INSTDIR\.env" 0 env_generate
-    MessageBox MB_YESNO|MB_ICONQUESTION "Configuracao existente (.env) encontrada.$\nDeseja manter a configuracao atual?" /SD IDYES IDYES env_done IDNO env_generate
+  ; Se .env ja existe em C:\gem-exportador (upgrade interativo), perguntar se deseja manter
+  IfFileExists "C:\gem-exportador\.env" 0 env_generate
+    MessageBox MB_YESNO|MB_ICONQUESTION "Configuracao existente encontrada.$\nDeseja manter a configuracao atual?" /SD IDYES IDYES env_done IDNO env_generate
 
   env_generate:
   StrCmp $GemMode "viewer" env_viewer env_server
@@ -219,7 +219,8 @@ Section "Install"
   env_server:
     DetailPrint "Configurando modo SERVIDOR..."
     CreateDirectory "C:\gem-exportador\controle"
-    FileOpen $0 "$INSTDIR\.env" w
+    ; Config em C:\gem-exportador\.env (editavel pelo usuario sem admin)
+    FileOpen $0 "C:\gem-exportador\.env" w
     FileWrite $0 'GEM_MODE=server$\r$\n'
     FileWrite $0 'SERVER_HOST=0.0.0.0$\r$\n'
     FileWrite $0 'SERVER_PORT=8080$\r$\n'
@@ -228,42 +229,32 @@ Section "Install"
     FileWrite $0 'LOG_LEVEL=INFO$\r$\n'
     FileWrite $0 'LOG_DIR=C:\gem-exportador\logs$\r$\n'
     FileWrite $0 '$\r$\n'
-    FileWrite $0 '# PostgreSQL$\r$\n'
-    FileWrite $0 'DB_HOST=localhost$\r$\n'
+    FileWrite $0 '# PostgreSQL KSI (producao) - altere pelo app em Configuracoes$\r$\n'
+    FileWrite $0 'DB_HOST=192.168.1.152$\r$\n'
     FileWrite $0 'DB_PORT=5432$\r$\n'
-    FileWrite $0 'DB_NAME=gem_exportador$\r$\n'
-    FileWrite $0 'DB_USER=postgres$\r$\n'
-    FileWrite $0 'DB_PASSWORD=123$\r$\n'
+    FileWrite $0 'DB_NAME=gem_jhonrob$\r$\n'
+    FileWrite $0 'DB_USER=ksi$\r$\n'
+    FileWrite $0 'DB_PASSWORD=ksi$\r$\n'
     FileWrite $0 '$\r$\n'
-    FileWrite $0 '# Supabase (backup na nuvem)$\r$\n'
-    FileWrite $0 'SUPABASE_URL=postgresql://postgres.vtqcakghscdpaupebwir:5XGHDAB2FLK2CKVi3t@aws-0-sa-east-1.pooler.supabase.com:6543/postgres$\r$\n'
-    FileWrite $0 'SUPABASE_BACKUP_ENABLED=true$\r$\n'
+    FileWrite $0 'SUPABASE_BACKUP_ENABLED=false$\r$\n'
     FileClose $0
-
-    ; Script de setup PostgreSQL (so no servidor, primeira instalacao)
-    File "/oname=setup-postgres.cmd" "setup-postgres.cmd"
-    DetailPrint "Configurando PostgreSQL (pode baixar na primeira vez)..."
-    nsExec::ExecToLog '"$INSTDIR\setup-postgres.cmd"'
-    Pop $0
-    StrCmp $0 "0" pg_ok
-      DetailPrint "Aviso: Setup PostgreSQL retornou codigo $0"
-    pg_ok:
     Goto env_done
 
   env_viewer:
     DetailPrint "Configurando modo VIEWER (servidor: $ServerIP)..."
-    FileOpen $0 "$INSTDIR\.env" w
+    ; Config em C:\gem-exportador\.env (editavel pelo usuario sem admin)
+    FileOpen $0 "C:\gem-exportador\.env" w
     FileWrite $0 'GEM_MODE=viewer$\r$\n'
     FileWrite $0 'SERVER_URL=http://$ServerIP:8080$\r$\n'
     FileWrite $0 'LOG_LEVEL=INFO$\r$\n'
     FileWrite $0 'LOG_DIR=C:\gem-exportador\logs$\r$\n'
     FileWrite $0 '$\r$\n'
-    FileWrite $0 '# PostgreSQL (remoto no servidor)$\r$\n'
+    FileWrite $0 '# PostgreSQL (banco no servidor - nao usado pelo viewer)$\r$\n'
     FileWrite $0 'DB_HOST=$ServerIP$\r$\n'
     FileWrite $0 'DB_PORT=5432$\r$\n'
-    FileWrite $0 'DB_NAME=gem_exportador$\r$\n'
-    FileWrite $0 'DB_USER=postgres$\r$\n'
-    FileWrite $0 'DB_PASSWORD=123$\r$\n'
+    FileWrite $0 'DB_NAME=gem_jhonrob$\r$\n'
+    FileWrite $0 'DB_USER=ksi$\r$\n'
+    FileWrite $0 'DB_PASSWORD=ksi$\r$\n'
     FileClose $0
 
   env_done:

@@ -9,13 +9,14 @@ import java.io.File
 object DesktopConfig {
     private val envDir: String by lazy {
         val candidates = listOf(
+            File("C:\\gem-exportador"),          // config editável pelo usuário (sem admin)
             File(System.getProperty("user.dir")),
             File(System.getProperty("user.dir")).parentFile,
             File(System.getProperty("user.dir"), ".."),
             File(System.getProperty("user.dir"), "../..")
         )
         candidates.firstOrNull { it != null && File(it, ".env").exists() }?.absolutePath
-            ?: System.getProperty("user.dir")
+            ?: "C:\\gem-exportador"
     }
 
     private val dotenv by lazy {

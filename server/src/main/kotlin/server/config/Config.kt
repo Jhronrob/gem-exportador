@@ -46,14 +46,15 @@ object Config {
 
     private fun findEnvDirectory(): String {
         val candidates = listOf(
+            File("C:\\gem-exportador"),          // config editável pelo usuário (sem admin)
             File(System.getProperty("user.dir")),
             File(System.getProperty("user.dir")).parentFile,
             File(System.getProperty("user.dir"), ".."),
             File(System.getProperty("user.dir"), "../..")
         )
         for (dir in candidates) {
-            if (File(dir, ".env").exists()) return dir.absolutePath
+            if (dir != null && File(dir, ".env").exists()) return dir.absolutePath
         }
-        return System.getProperty("user.dir")
+        return "C:\\gem-exportador"
     }
 }
