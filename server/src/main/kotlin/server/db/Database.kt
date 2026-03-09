@@ -7,7 +7,7 @@ import java.sql.DriverManager
 
 /**
  * PostgreSQL JDBC para o servidor.
- * Conecta ao PostgreSQL local (instalado pelo setup-postgres.cmd durante a instalação).
+ * Conecta ao PostgreSQL de produção da KSI (192.168.1.152).
  * Configuração via variáveis de ambiente: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
  */
 class Database {
@@ -27,7 +27,7 @@ class Database {
                 connection().use { conn ->
                     conn.createStatement().executeUpdate("""
                         CREATE TABLE IF NOT EXISTS desenho (
-                            id TEXT NOT NULL PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+                            id TEXT NOT NULL PRIMARY KEY,
                             nome_arquivo TEXT NOT NULL,
                             computador TEXT NOT NULL,
                             caminho_destino TEXT NOT NULL,
@@ -78,7 +78,7 @@ class Database {
                     conn.createStatement().executeUpdate("""
                         CREATE TRIGGER desenho_changes_trigger
                         AFTER INSERT OR UPDATE OR DELETE ON desenho
-                        FOR EACH ROW EXECUTE FUNCTION notify_desenho_changes()
+                        FOR EACH ROW EXECUTE PROCEDURE notify_desenho_changes()
                     """.trimIndent())
                     
                     AppLog.info("PostgreSQL inicializado com sucesso!")

@@ -1,7 +1,7 @@
 -- =====================================================================================
 -- GEM EXPORTADOR - Schema PostgreSQL
--- Banco de dados: gem_exportador
--- Tabela: desenho (equivalente a "desenhos" no Supabase)
+-- Banco de dados: gem_jhonrob (produção KSI - PostgreSQL 9.5)
+-- Tabela: desenho
 -- =====================================================================================
 --
 -- ESTRUTURA DA TABELA "desenho"
@@ -9,7 +9,7 @@
 --
 --  #  | Coluna                        | Tipo        | Obrigatório | Default              | Constraint                                          | Descrição
 -- ----+-------------------------------+-------------+-------------+----------------------+-----------------------------------------------------+-------------------------------------------
---  1  | id                            | TEXT (PK)   | SIM         | gen_random_uuid()    |                                                     | Identificador único UUID gerado automaticamente
+--  1  | id                            | TEXT (PK)   | SIM         | (pela aplicação)     |                                                     | Identificador único UUID gerado pela aplicação (java.util.UUID.randomUUID())
 --  2  | nome_arquivo                  | TEXT        | SIM         | —                    |                                                     | Nome do arquivo de desenho (ex: 170000112_03.idw)
 --  3  | computador                    | TEXT        | SIM         | —                    |                                                     | Nome do computador que processou
 --  4  | caminho_destino               | TEXT        | SIM         | —                    |                                                     | Caminho de rede destino dos arquivos
@@ -41,11 +41,12 @@
 -- =====================================================================================
 
 -- Cria o banco (execute como superuser se necessário)
--- CREATE DATABASE gem_exportador;
+-- CREATE DATABASE gem_jhonrob;
 
 -- Tabela principal de desenhos
+-- Nota: id é sempre gerado pela aplicação (java.util.UUID.randomUUID()), sem DEFAULT no banco.
 CREATE TABLE IF NOT EXISTS desenho (
-    id                             TEXT        NOT NULL PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+    id                             TEXT        NOT NULL PRIMARY KEY,
     nome_arquivo                   TEXT        NOT NULL,
     computador                     TEXT        NOT NULL,
     caminho_destino                TEXT        NOT NULL,
@@ -93,4 +94,4 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS desenho_changes_trigger ON desenho;
 CREATE TRIGGER desenho_changes_trigger
 AFTER INSERT OR UPDATE OR DELETE ON desenho
-FOR EACH ROW EXECUTE FUNCTION notify_desenho_changes();
+FOR EACH ROW EXECUTE PROCEDURE notify_desenho_changes();

@@ -9,7 +9,7 @@ import java.sql.DriverManager
 
 actual class DatabaseDriverFactory {
     actual fun createDriver(): SqlDriver {
-        // Conecta ao PostgreSQL local (instalado pelo setup-postgres.cmd)
+        // Conecta ao PostgreSQL de produção KSI (192.168.1.152)
         var connection: Connection? = null
         var lastError: Exception? = null
         
