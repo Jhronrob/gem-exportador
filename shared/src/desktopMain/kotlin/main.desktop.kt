@@ -176,7 +176,8 @@ private fun createRepository(): IDesenhoRepository =
 
 @Composable
 fun MainView() {
-    App(createRepository())
+    val repository = remember { createRepository() }
+    App(repository)
 }
 
 @Preview
