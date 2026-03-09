@@ -24,7 +24,7 @@ class DesenhoRepository(
     /**
      * Observa todos os desenhos (Flow reativo)
      */
-    fun observeAll(): Flow<List<DesenhoAutodesk>> {
+    override fun observeAll(): Flow<List<DesenhoAutodesk>> {
         return queries.selectAll()
             .asFlow()
             .mapToList(Dispatchers.Default)
@@ -36,7 +36,7 @@ class DesenhoRepository(
     /**
      * Observa desenhos pendentes e processando
      */
-    fun observePendentesEProcessando(): Flow<List<DesenhoAutodesk>> {
+    override fun observePendentesEProcessando(): Flow<List<DesenhoAutodesk>> {
         return queries.selectPendentesEProcessando()
             .asFlow()
             .mapToList(Dispatchers.Default)
@@ -48,28 +48,28 @@ class DesenhoRepository(
     /**
      * Busca todos os desenhos
      */
-    fun getAll(): List<DesenhoAutodesk> {
+    override fun getAll(): List<DesenhoAutodesk> {
         return queries.selectAll().executeAsList().map { it.toDesenhoAutodesk() }
     }
     
     /**
      * Busca desenho por ID
      */
-    fun getById(id: String): DesenhoAutodesk? {
+    override fun getById(id: String): DesenhoAutodesk? {
         return queries.selectById(id).executeAsOneOrNull()?.toDesenhoAutodesk()
     }
     
     /**
      * Busca desenhos por status
      */
-    fun getByStatus(status: String): List<DesenhoAutodesk> {
+    override fun getByStatus(status: String): List<DesenhoAutodesk> {
         return queries.selectByStatus(status).executeAsList().map { it.toDesenhoAutodesk() }
     }
     
     /**
      * Insere ou atualiza um desenho
      */
-    fun upsert(desenho: DesenhoAutodesk) {
+    override fun upsert(desenho: DesenhoAutodesk) {
         database.transaction {
             queries.insert(
                 id = desenho.id,
@@ -99,7 +99,7 @@ class DesenhoRepository(
      * Insere ou atualiza multiplos desenhos.
      * Protegido contra falhas: se a transacao em lote falhar, tenta um a um.
      */
-    fun upsertAll(desenhos: List<DesenhoAutodesk>) {
+    override fun upsertAll(desenhos: List<DesenhoAutodesk>) {
         try {
             database.transaction {
                 desenhos.forEach { desenho ->
@@ -141,7 +141,7 @@ class DesenhoRepository(
     /**
      * Atualiza o status de um desenho
      */
-    fun updateStatus(id: String, status: String, horarioAtualizacao: String) {
+    override fun updateStatus(id: String, status: String, horarioAtualizacao: String) {
         queries.updateStatus(
             status = status,
             horario_atualizacao = horarioAtualizacao,
@@ -153,7 +153,7 @@ class DesenhoRepository(
     /**
      * Atualiza o progresso de um desenho
      */
-    fun updateProgresso(id: String, progresso: Int, horarioAtualizacao: String) {
+    override fun updateProgresso(id: String, progresso: Int, horarioAtualizacao: String) {
         queries.updateProgresso(
             progresso = progresso,
             horario_atualizacao = horarioAtualizacao,
@@ -165,14 +165,14 @@ class DesenhoRepository(
     /**
      * Remove um desenho
      */
-    fun delete(id: String) {
+    override fun delete(id: String) {
         queries.delete(id)
     }
     
     /**
      * Remove todos os desenhos
      */
-    fun deleteAll() {
+    override fun deleteAll() {
         queries.deleteAll()
     }
     
