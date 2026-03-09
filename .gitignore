@@ -42,3 +42,11 @@ logs/
 # Arquivos temporários
 *.tmp
 *.temp
+
+# Pasta de dados locais / migração
+gem-exportador/
+desenho_export.csv
+migrate_sqlite.java
+migrate_sqlite.class
+migrate-data.ps1
+pg16-binaries.zip
