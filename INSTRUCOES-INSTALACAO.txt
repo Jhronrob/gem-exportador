@@ -1,0 +1,22 @@
+GEM EXPORTADOR - INSTRUCOES DE INSTALACAO
+
+------------------------------------------
+MODO SERVIDOR (apenas 1 maquina)
+------------------------------------------
+
+1. Execute o instalador
+2. Selecione "Servidor"
+3. Conclua a instalacao
+
+O app vai processar os arquivos do Inventor e iniciar a Api do exportador que vai expor dados para os VIEWERS.
+
+------------------------------------------
+MODO VIEWER (demais maquinas da empresa)
+------------------------------------------
+
+1. Execute o instalador
+2. Selecione "Viewer"
+3. No campo IP, digite o ip da máquina onde o servidor está instalado
+4. Conclua a instalacao
+
+Pronto. O viewer vai exibir a fila em tempo real.
