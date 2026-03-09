@@ -205,19 +205,10 @@ Section "Install"
   CreateDirectory "C:\gem-exportador\logs"
 
   ; ============================================
-  ; Em silent mode (auto-update): PRESERVAR .env existente
-  ; Não regenerar configuração — manter server/viewer, IP, banco, etc.
+  ; Sempre regrava o .env - nunca preserva o antigo
+  ; Silent mode usa GemMode/ServerIP do registro (gravados na instalacao anterior)
+  ; Instalacao interativa usa o que o usuario escolheu na tela
   ; ============================================
-  ${If} ${Silent}
-    DetailPrint "Atualizacao: preservando configuracao existente (.env)"
-    Goto env_done
-  ${EndIf}
-
-  ; ============================================
-  ; Instalacao interativa: gera .env conforme modo selecionado
-  ; ============================================
-
-  ; Sempre regrava o .env conforme o modo escolhido na tela de selecao
   env_generate:
   StrCmp $GemMode "viewer" env_viewer env_server
 
