@@ -50,9 +50,22 @@ jobs:
       - name: Create version.json
         run: |
           $installer = "GemExportador-${{ steps.get_version.outputs.VERSION }}-setup.exe"
-          @"
-          {"version":"${{ steps.get_version.outputs.VERSION }}","downloadUrl":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.get_version.outputs.VERSION }}/$installer","releaseNotes":"Versao ${{ steps.get_version.outputs.VERSION }}","mandatory":false}
-          "@ | Out-File -FilePath version.json -Encoding utf8
+          $content = "{`"version`":`"${{ steps.get_version.outputs.VERSION }}`",`"downloadUrl`":`"https://github.com/${{ github.repository }}/releases/download/v${{ steps.get_version.outputs.VERSION }}/$installer`",`"releaseNotes`":`"Versao ${{ steps.get_version.outputs.VERSION }}`",`"mandatory`":false}"
+          $content | Out-File -FilePath version.json -Encoding utf8NoBOM
+        shell: pwsh
+
+      - name: Update Gist with version.json
+        run: |
+          $content = Get-Content version.json -Raw
+          $escaped = $content.Trim() -replace '\\', '\\\\' -replace '"', '\"' -replace "`n", '\n' -replace "`r", ''
+          $body = "{`"files`":{`"version.json`":{`"content`":`"$escaped`"}}}"
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/gists/c6b0d49af57e8869284b86bc45df8519" `
+            -Method Patch `
+            -Headers @{ Authorization = "token ${{ secrets.GIST_TOKEN }}"; "User-Agent" = "github-actions" } `
+            -Body $body `
+            -ContentType "application/json"
+          Write-Host "Gist atualizado com versao ${{ steps.get_version.outputs.VERSION }}"
         shell: pwsh
 
       - name: Create Release

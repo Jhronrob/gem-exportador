@@ -10,30 +10,26 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * Resposta da API do GitHub Releases
+ * Formato do version.json hospedado no Gist público.
+ * Atualizado automaticamente pelo GitHub Actions a cada release.
  */
 @Serializable
-private data class GitHubRelease(
-    val tag_name: String,
-    val name: String? = null,
-    val body: String? = null,
-    val assets: List<GitHubAsset> = emptyList()
-)
-
-@Serializable
-private data class GitHubAsset(
-    val name: String,
-    val browser_download_url: String
+private data class VersionJson(
+    val version: String,
+    val downloadUrl: String,
+    val releaseNotes: String = "",
+    val mandatory: Boolean = false
 )
 
 /**
- * Verifica atualizações disponíveis no GitHub Releases
+ * Verifica atualizações disponíveis via Gist público (sem autenticação no app).
+ * O Gist é atualizado automaticamente pelo GitHub Actions a cada release.
+ * Gist: https://gist.github.com/afonsoburginski/c6b0d49af57e8869284b86bc45df8519
  */
 object UpdateChecker {
-    // Configurar com o repositório correto
-    private const val GITHUB_OWNER = "afonsoburginski"
-    private const val GITHUB_REPO = "gem-exportador"
-    
+    private const val VERSION_JSON_URL =
+        "https://gist.githubusercontent.com/afonsoburginski/c6b0d49af57e8869284b86bc45df8519/raw/version.json"
+
     private val client = HttpClient(CIO) {
         install(ContentNegotiation) {
             json(Json {
@@ -42,33 +38,26 @@ object UpdateChecker {
             })
         }
     }
-    
+
     /**
-     * Verifica se há uma versão mais nova disponível no GitHub
-     * @return VersionInfo se há atualização, null se não há ou erro
+     * Verifica se há uma versão mais nova disponível.
+     * @return VersionInfo se há atualização, null se está na versão mais recente ou erro.
      */
     suspend fun checkForUpdate(): VersionInfo? {
         return try {
-            val url = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
-            val release: GitHubRelease = client.get(url) {
-                header("Accept", "application/vnd.github.v3+json")
+            val versionJson: VersionJson = client.get(VERSION_JSON_URL) {
+                header("Cache-Control", "no-cache")
                 header("User-Agent", "GemExportador/${AppVersion.current}")
             }.body()
-            
-            val remoteVersion = release.tag_name.removePrefix("v")
-            
+
+            val remoteVersion = versionJson.version.removePrefix("v")
+
             if (AppVersion.isNewerVersion(remoteVersion)) {
-                // Encontra o asset do instalador (.exe do NSIS ou .msi legado)
-                val installerAsset = release.assets.find { 
-                    it.name.endsWith("-setup.exe") || it.name.endsWith(".exe") || it.name.endsWith(".msi")
-                }
-                
                 VersionInfo(
                     version = remoteVersion,
-                    downloadUrl = installerAsset?.browser_download_url 
-                        ?: "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/tag/${release.tag_name}",
-                    releaseNotes = release.body ?: release.name ?: "Nova versão disponível",
-                    mandatory = false
+                    downloadUrl = versionJson.downloadUrl,
+                    releaseNotes = versionJson.releaseNotes.ifBlank { "Nova versão $remoteVersion disponível" },
+                    mandatory = versionJson.mandatory
                 )
             } else {
                 null
@@ -78,10 +67,7 @@ object UpdateChecker {
             null
         }
     }
-    
-    /**
-     * Fecha o cliente HTTP
-     */
+
     fun close() {
         client.close()
     }
