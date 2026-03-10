@@ -9,6 +9,7 @@ import io.ktor.server.websocket.*
 import io.ktor.http.content.*
 import io.ktor.websocket.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import model.DesenhoAutodesk
 import server.broadcast.Broadcast
 import server.db.DesenhoDao
@@ -162,7 +163,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         )
         desenhoDao.insert(desenho)
         queue.add(id)
-        broadcast.sendInsert(desenhoDao.getById(id)!!)
+        desenhoDao.getById(id)?.let { broadcast.sendInsert(it) }
 
         call.respond(HttpStatusCode.Created, QueueResponse(
             id = id,
@@ -231,7 +232,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         )
         desenhoDao.insert(desenho)
         queue.add(id)
-        broadcast.sendInsert(desenhoDao.getById(id)!!)
+        desenhoDao.getById(id)?.let { broadcast.sendInsert(it) }
         
         call.respond(HttpStatusCode.Created, QueueResponse(
             id = id,
@@ -331,8 +332,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
             arquivosProcessados = body.arquivosProcessados,
             erro = body.erro
         )
-        val updated = desenhoDao.getById(id)!!
-        broadcast.sendUpdate(updated)
+        desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
         call.respond(SuccessResponse(sucesso = true, mensagem = "Desenho atualizado", id = id))
     }
 
@@ -351,8 +351,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         queue.remove(id)
         val now = java.time.Instant.now().toString()
         desenhoDao.update(id, status = "cancelado", horarioAtualizacao = now, canceladoEm = now)
-        val updated = desenhoDao.getById(id)!!
-        broadcast.sendUpdate(updated)
+        desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
         call.respond(CancelResponse(sucesso = true, mensagem = "Desenho cancelado", id = id, status = "cancelado"))
     }
 
@@ -383,8 +382,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         val now = java.time.Instant.now().toString()
         desenhoDao.update(id, status = "pendente", horarioAtualizacao = now, progresso = 0, erro = null, canceladoEm = null, posicaoFila = pos)
         queue.add(id, restantes)
-        val updated = desenhoDao.getById(id)!!
-        broadcast.sendUpdate(updated)
+        desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
         call.respond(SuccessResponse(sucesso = true, mensagem = "Desenho na fila para reprocessamento", id = id, status = "pendente", posicaoFila = pos, formatosRestantes = restantes))
     }
 
@@ -421,12 +419,18 @@ val validFormats = setOf("pdf", "dwf", "dwg")
     webSocket("/ws") {
         broadcast.addSession(this)
         try {
-            send(io.ktor.websocket.Frame.Text("""{"type":"subscribe","table":"desenhos"}"""))
-            broadcast.sendInitial(desenhoDao.list(limit = 500, offset = 0))
+            // Envia dados iniciais apenas para esta sessão (não broadcast global)
+            val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+            fun buildInitial() = """{"type":"initial","data":${json.encodeToString(desenhoDao.list(limit = 500, offset = 0))}}"""
+            send(io.ktor.websocket.Frame.Text(buildInitial()))
+
             for (frame in incoming) {
                 if (frame is io.ktor.websocket.Frame.Text) {
-                    val text = (frame as io.ktor.websocket.Frame.Text).readText()
-                    if (text.contains("subscribe")) broadcast.sendInitial(desenhoDao.list(limit = 500, offset = 0))
+                    val text = frame.readText()
+                    // Cliente pode solicitar reenvio dos dados iniciais (ex: refresh manual)
+                    if (text.contains("subscribe")) {
+                        send(io.ktor.websocket.Frame.Text(buildInitial()))
+                    }
                 }
             }
         } finally {

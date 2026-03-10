@@ -5,6 +5,8 @@ import io.ktor.server.cio.*
 import io.ktor.server.engine.*
 import server.config.Config
 import server.util.AppLog
+import java.net.BindException
+import java.net.ServerSocket
 
 private var serverInstance: CIOApplicationEngine? = null
 
@@ -13,23 +15,55 @@ fun main() {
 }
 
 /**
- * Inicia o servidor Ktor. 
- * @param wait Se true, bloqueia a thread atual até o servidor parar.
+ * Verifica se a porta está disponível antes de tentar iniciar.
  */
-fun startEmbeddedServer(wait: Boolean = false) {
+private fun isPortAvailable(host: String, port: Int): Boolean {
+    return try {
+        ServerSocket(port, 1, java.net.InetAddress.getByName(host)).use { true }
+    } catch (e: Exception) {
+        false
+    }
+}
+
+/**
+ * Inicia o servidor Ktor.
+ * @param wait Se true, bloqueia a thread atual até o servidor parar.
+ * @return true se iniciou com sucesso, false se a porta já estiver em uso.
+ */
+fun startEmbeddedServer(wait: Boolean = false): Boolean {
     if (serverInstance != null) {
         AppLog.info("Servidor já está rodando")
-        return
+        return true
     }
-    
-    AppLog.info("Iniciando servidor em ${Config.serverHost}:${Config.serverPort}")
-    serverInstance = embeddedServer(CIO, port = Config.serverPort, host = Config.serverHost) {
-        configureSerialization()
-        configureStatusPages()
-        configureWebSocket()
-        configureRouting()
+
+    val host = Config.serverHost
+    val port = Config.serverPort
+
+    if (!isPortAvailable(host, port)) {
+        AppLog.error("[STARTUP] ERRO: Porta $port já está em uso. Outra instância do servidor pode estar rodando.")
+        AppLog.error("[STARTUP] Encerrando para evitar conflito. Feche a instância anterior e tente novamente.")
+        return false
     }
-    serverInstance!!.start(wait = wait)
+
+    AppLog.info("Iniciando servidor em $host:$port")
+    try {
+        serverInstance = embeddedServer(CIO, port = port, host = host) {
+            configureSerialization()
+            configureStatusPages()
+            configureWebSocket()
+            configureRouting()
+        }
+        serverInstance!!.start(wait = wait)
+        return true
+    } catch (e: BindException) {
+        AppLog.error("[STARTUP] Falha ao iniciar: porta $port já está ocupada — ${e.message}")
+        serverInstance = null
+        return false
+    } catch (e: Exception) {
+        AppLog.error("[STARTUP] Falha inesperada ao iniciar servidor: ${e.message}", e)
+        serverInstance = null
+        return false
+    }
 }
 
 /**

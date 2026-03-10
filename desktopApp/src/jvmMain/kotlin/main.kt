@@ -52,9 +52,15 @@ fun main() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 println("[GEM] Iniciando servidor embutido...")
-                server.startEmbeddedServer()
+                val iniciou = server.startEmbeddedServer()
+                if (!iniciou) {
+                    val msg = "Servidor nao iniciou — porta ja em uso. Feche a instancia anterior do app e tente novamente."
+                    println("[GEM] AVISO: $msg")
+                    util.logToFile("WARN", msg)
+                }
             } catch (e: Exception) {
                 println("[GEM] Erro ao iniciar servidor: ${e.message}")
+                util.logToFile("ERROR", "Erro ao iniciar servidor: ${e.message}")
             }
         }
         // Aguarda o servidor iniciar (PostgreSQL já está rodando como serviço)

@@ -177,17 +177,6 @@ class ProcessingQueue(
                 continue
             }
 
-            // ===== GUARD: Garante que só UM desenho tenha status "processando" =====
-            // Reseta qualquer outro desenho que ficou preso em "processando" 
-            // (ex: crash anterior, race condition)
-            val outrosProcessando = desenhoDao.list(status = "processando", limit = 100, offset = 0)
-                .filter { it.id != item.desenhoId }
-            for (outro in outrosProcessando) {
-                AppLog.warn("[QUEUE-GUARD] Resetando desenho ${outro.nomeArquivo} (${outro.id}) de 'processando' para 'pendente' — só 1 desenho por vez!")
-                desenhoDao.update(outro.id, status = "pendente")
-                broadcast.sendUpdate(desenhoDao.getById(outro.id)!!)
-            }
-
             // Inicializa progresso dos formatos para este desenho
             val formatosSolicitados = desenho.formatosSolicitados.ifEmpty { listOf("pdf") }
             formatosSolicitados.forEach { fmt ->
@@ -201,7 +190,7 @@ class ProcessingQueue(
             }
 
             desenhoDao.update(item.desenhoId, status = "processando", progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados))
-            broadcast.sendUpdate(desenhoDao.getById(item.desenhoId)!!)
+            desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
             val tentativaInfo = if (item.tentativa > 1) " [tentativa ${item.tentativa}/$MAX_TENTATIVAS]" else ""
             AppLog.info("Processando desenho ${item.desenhoId} formato ${item.formato}$tentativaInfo (entrada: ${desenho.nomeArquivo})")
 
@@ -228,7 +217,7 @@ class ProcessingQueue(
                 }
             }
 
-            desenho = desenhoDao.getById(item.desenhoId)!!
+            desenho = desenhoDao.getById(item.desenhoId) ?: run { currentItem = null; continue }
             if (desenho.status == "cancelado") {
                 currentItem = null
                 continue
@@ -261,16 +250,13 @@ class ProcessingQueue(
                 if (item.tentativa < MAX_TENTATIVAS) {
                     val proxTentativa = item.tentativa + 1
                     AppLog.info("[AUTO-RETRY] Reagendando ${desenho.nomeArquivo} formato ${item.formato} -> tentativa $proxTentativa/$MAX_TENTATIVAS (aguardando ${DELAY_RETRY_MS / 1000}s)")
-                    // Delay para o Inventor se recuperar
                     delay(DELAY_RETRY_MS)
                     mutex.withLock {
                         queue.add(Item(item.desenhoId, item.formato, item.posicaoFila, proxTentativa, item.horarioEnvio))
                         sortQueue()
                     }
-                    // Não registra erro ainda — só quando esgotar tentativas
-                    // Atualiza status para processando e continua
                     desenhoDao.update(item.desenhoId, status = "processando")
-                    broadcast.sendUpdate(desenhoDao.getById(item.desenhoId)!!)
+                    desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
                     currentItem = null
                     continue
                 }
@@ -316,8 +302,7 @@ class ProcessingQueue(
                 arquivosProcessados = json.encodeToString(existentes),
                 erro = if (errosAnteriores.isEmpty()) null else errosAnteriores.joinToString("; ")
             )
-            val updated = desenhoDao.getById(item.desenhoId)
-            if (updated != null) broadcast.sendUpdate(updated)
+            desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
 
             // Limpa progresso do mapa quando desenho termina completamente
             if (todoProcessado) {

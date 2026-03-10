@@ -51,6 +51,17 @@ fun Application.configureRouting() {
     
     // Adiciona desenhos pendentes e processando à fila em ordem FIFO (primeiro recebido = primeiro a processar)
     kotlinx.coroutines.runBlocking {
+        // STARTUP GUARD: Reseta desenhos presos em "processando" de sessões anteriores (crash/reinicio).
+        // Roda UMA vez aqui, nunca dentro do loop de processamento.
+        val presosProcessando = desenhoDao.list(status = "processando", limit = 200, offset = 0)
+        if (presosProcessando.isNotEmpty()) {
+            AppLog.warn("[STARTUP-GUARD] ${presosProcessando.size} desenho(s) presos em 'processando' encontrados — resetando para 'pendente'...")
+            for (preso in presosProcessando) {
+                AppLog.warn("[STARTUP-GUARD] Resetando ${preso.nomeArquivo} (${preso.id}) para 'pendente'")
+                desenhoDao.update(preso.id, status = "pendente")
+            }
+        }
+
         val retomar = desenhoDao.listPendentesEProcessandoOrderedByFila(limit = 200)
         if (retomar.isNotEmpty()) {
             AppLog.info("Adicionando ${retomar.size} desenho(s) a fila (ordem FIFO por horario_envio)...")
@@ -157,6 +168,7 @@ private fun startPostgresListener(
                                             "INSERT" -> {
                                                 broadcast.sendInsert(desenho)
                                                 supabaseBackup.syncRecord(id)
+                                                // Só adiciona à fila se pendente e não estiver já em processamento
                                                 if (desenho.status == "pendente") {
                                                     queue.add(desenho.id)
                                                     AppLog.info("[REALTIME] -> Adicionado à fila de processamento")
