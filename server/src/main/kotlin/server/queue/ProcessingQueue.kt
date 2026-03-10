@@ -217,7 +217,9 @@ class ProcessingQueue(
                 }
             }
 
-            desenho = desenhoDao.getById(item.desenhoId) ?: run { currentItem = null; continue }
+            val reloaded = desenhoDao.getById(item.desenhoId)
+            if (reloaded == null) { currentItem = null; continue }
+            desenho = reloaded
             if (desenho.status == "cancelado") {
                 currentItem = null
                 continue
