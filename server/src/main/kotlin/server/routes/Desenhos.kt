@@ -421,7 +421,7 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         try {
             // Envia dados iniciais apenas para esta sessão (não broadcast global)
             val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
-            fun buildInitial() = """{"type":"initial","data":${json.encodeToString(desenhoDao.list(limit = 500, offset = 0))}}"""
+            fun buildInitial() = """{"type":"initial","data":${json.encodeToString(desenhoDao.list(limit = 10000, offset = 0))}}"""
             send(io.ktor.websocket.Frame.Text(buildInitial()))
 
             for (frame in incoming) {

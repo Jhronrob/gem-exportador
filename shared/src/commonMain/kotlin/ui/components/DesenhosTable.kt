@@ -318,44 +318,6 @@ private fun Toolbar(
 
         Spacer(Modifier.width(10.dp))
 
-        // Botão de período/calendário unificado
-        Row(
-            modifier = Modifier
-                .height(32.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (hasDateFilter) AppColors.Primary.copy(alpha = 0.12f) else AppColors.Surface)
-                .border(
-                    1.dp,
-                    if (hasDateFilter) AppColors.Primary.copy(alpha = 0.5f) else AppColors.Border,
-                    RoundedCornerShape(6.dp)
-                )
-                .clickable { onDateFilterClick() }
-                .pointerHoverIcon(PointerIcon.Hand)
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Filled.DateRange,
-                contentDescription = "Filtro de período",
-                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextSecondary,
-                modifier = Modifier.size(13.dp)
-            )
-            Text(
-                text = periodoLabel,
-                color = if (hasDateFilter) AppColors.Primary else AppColors.TextPrimary,
-                fontSize = 12.sp
-            )
-            Icon(
-                imageVector = Icons.Filled.ArrowDropDown,
-                contentDescription = null,
-                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextMuted,
-                modifier = Modifier.size(16.dp)
-            )
-        }
-
-        Spacer(Modifier.width(8.dp))
-
         // Input de busca
         Row(
             modifier = Modifier
@@ -406,6 +368,44 @@ private fun Toolbar(
                         .pointerHoverIcon(PointerIcon.Hand)
                 )
             }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // Botão de período/calendário unificado — à direita da busca
+        Row(
+            modifier = Modifier
+                .height(32.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (hasDateFilter) AppColors.Primary.copy(alpha = 0.12f) else AppColors.Surface)
+                .border(
+                    1.dp,
+                    if (hasDateFilter) AppColors.Primary.copy(alpha = 0.5f) else AppColors.Border,
+                    RoundedCornerShape(6.dp)
+                )
+                .clickable { onDateFilterClick() }
+                .pointerHoverIcon(PointerIcon.Hand)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.DateRange,
+                contentDescription = "Filtro de período",
+                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextSecondary,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = periodoLabel,
+                color = if (hasDateFilter) AppColors.Primary else AppColors.TextPrimary,
+                fontSize = 12.sp
+            )
+            Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextMuted,
+                modifier = Modifier.size(16.dp)
+            )
         }
 
         // Spacer empurra concluídos para a direita
@@ -1200,7 +1200,9 @@ private fun isBetween(
 private data class PeriodoShortcut(val label: String, val de: String, val ate: String)
 
 /**
- * Date Range Picker unificado — atalhos de período rápido + calendário customizado
+ * Date Range Picker unificado — atalhos de período rápido + calendário customizado.
+ * Atalhos NÃO fecham o dialog: apenas pré-selecionam o intervalo no calendário.
+ * O usuário confirma com "Aplicar".
  */
 @Composable
 private fun DateRangePickerDialog(
@@ -1212,31 +1214,50 @@ private fun DateRangePickerDialog(
 ) {
     val today = getTodayDate()
     val year = today.take(4)
+    val todayTriple = isoToTriple(today) ?: Triple(2026, 1, 1)
 
-    // Atalhos calculados uma vez
+    // Atalhos definidos uma vez
     val shortcuts = remember {
         listOf(
-            PeriodoShortcut("7 dias",       getDaysAgoDate(7),  ""),
-            PeriodoShortcut("30 dias",      getDaysAgoDate(30), ""),
-            PeriodoShortcut("Este ano",     "$year-01-01",      ""),
+            PeriodoShortcut("7 dias",       getDaysAgoDate(7),  today),
+            PeriodoShortcut("30 dias",      getDaysAgoDate(30), today),
+            PeriodoShortcut("Este ano",     "$year-01-01",      today),
             PeriodoShortcut("Todo período", "",                 "")
         )
     }
 
+    // Estado interno do picker
     val initStart = if (currentDe.isNotBlank()) isoToTriple(currentDe) else null
     val initEnd   = if (currentAte.isNotBlank()) isoToTriple(currentAte) else null
 
-    var rangeStart by remember { mutableStateOf(initStart) }
-    var rangeEnd   by remember { mutableStateOf(initEnd) }
-    var hoveredDay by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) }
+    var rangeStart   by remember { mutableStateOf(initStart) }
+    var rangeEnd     by remember { mutableStateOf(initEnd) }
+    var pendingPreset by remember { mutableStateOf(activePreset) }
+    var hoveredDay   by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) }
 
-    val todayTriple = isoToTriple(today) ?: Triple(2026, 1, 1)
     val initYm = if (initStart != null) YearMonth(initStart.first, initStart.second)
                  else YearMonth(todayTriple.first, todayTriple.second)
     var leftMonth by remember { mutableStateOf(initYm) }
     val rightMonth = leftMonth.next()
 
+    // Clique num atalho: pré-seleciona o intervalo e navega o calendário, mas NÃO fecha
+    fun applyShortcutPreview(shortcut: PeriodoShortcut) {
+        pendingPreset = shortcut.label
+        if (shortcut.de.isBlank() && shortcut.ate.isBlank()) {
+            // "Todo período" → limpa seleção no calendário
+            rangeStart = null
+            rangeEnd = null
+        } else {
+            rangeStart = isoToTriple(shortcut.de)
+            rangeEnd   = if (shortcut.ate.isNotBlank()) isoToTriple(shortcut.ate) else null
+            // Navega calendário para o início do intervalo
+            rangeStart?.let { leftMonth = YearMonth(it.first, it.second) }
+        }
+    }
+
+    // Clique manual no calendário: limpa preset
     fun onDayClick(day: Triple<Int, Int, Int>) {
+        pendingPreset = null
         if (rangeStart == null || rangeEnd != null) {
             rangeStart = day; rangeEnd = null
         } else {
@@ -1248,10 +1269,24 @@ private fun DateRangePickerDialog(
         }
     }
 
+    // Pode aplicar se: atalho selecionado OU range manual completo
+    val canApply = pendingPreset != null || (rangeStart != null && rangeEnd != null)
+
     val effectiveEnd: Triple<Int, Int, Int>? = rangeEnd ?: if (rangeStart != null && hoveredDay != null &&
         tripleCompare(hoveredDay!!, rangeStart!!) >= 0) hoveredDay else null
     val effectiveStart: Triple<Int, Int, Int>? = if (rangeEnd == null && rangeStart != null &&
         hoveredDay != null && tripleCompare(hoveredDay!!, rangeStart!!) < 0) hoveredDay else rangeStart
+
+    // Texto de prévia da seleção
+    val previewText = when {
+        pendingPreset == "Todo período" -> "Todo o histórico"
+        pendingPreset != null           -> pendingPreset!!
+        rangeStart != null && rangeEnd != null -> {
+            "${formatDateBr(tripleToIso(rangeStart!!))}  →  ${formatDateBr(tripleToIso(rangeEnd!!))}"
+        }
+        rangeStart != null -> "${formatDateBr(tripleToIso(rangeStart!!))}  →  ..."
+        else -> "Selecione um período"
+    }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -1276,11 +1311,9 @@ private fun DateRangePickerDialog(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                     )
-                    val startText = rangeStart?.let { formatDateBr(tripleToIso(it)) } ?: "—"
-                    val endText   = rangeEnd?.let   { formatDateBr(tripleToIso(it)) } ?: "—"
                     Text(
-                        text = "$startText  →  $endText",
-                        color = if (rangeStart != null) AppColors.Primary else AppColors.TextMuted,
+                        text = previewText,
+                        color = if (canApply) AppColors.Primary else AppColors.TextMuted,
                         fontSize = 12.sp
                     )
                 }
@@ -1298,7 +1331,7 @@ private fun DateRangePickerDialog(
 
             Divider(color = AppColors.Border)
 
-            // Atalhos de período rápido
+            // Atalhos de período rápido — NÃO fecham o dialog
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1307,7 +1340,7 @@ private fun DateRangePickerDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 shortcuts.forEach { shortcut ->
-                    val isActive = activePreset == shortcut.label
+                    val isActive = pendingPreset == shortcut.label
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
@@ -1319,7 +1352,7 @@ private fun DateRangePickerDialog(
                                 if (isActive) AppColors.Primary.copy(alpha = 0.6f) else AppColors.Border,
                                 RoundedCornerShape(6.dp)
                             )
-                            .clickable { onApply(shortcut.de, shortcut.ate, shortcut.label) }
+                            .clickable { applyShortcutPreview(shortcut) }
                             .pointerHoverIcon(PointerIcon.Hand)
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center
@@ -1336,7 +1369,7 @@ private fun DateRangePickerDialog(
 
             Divider(color = AppColors.Border)
 
-            // Separador com título
+            // Divisor com título
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1345,11 +1378,7 @@ private fun DateRangePickerDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Box(modifier = Modifier.weight(1f).height(1.dp).background(AppColors.Border))
-                Text(
-                    text = "ou selecione manualmente",
-                    color = AppColors.TextMuted,
-                    fontSize = 11.sp
-                )
+                Text(text = "ou selecione manualmente", color = AppColors.TextMuted, fontSize = 11.sp)
                 Box(modifier = Modifier.weight(1f).height(1.dp).background(AppColors.Border))
             }
 
@@ -1408,24 +1437,25 @@ private fun DateRangePickerDialog(
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 )
                 Text(
-                    text = "Aplicar intervalo",
-                    color = if (rangeStart != null && rangeEnd != null) AppColors.TextPrimary else AppColors.TextMuted,
+                    text = "Aplicar",
+                    color = if (canApply) AppColors.TextPrimary else AppColors.TextMuted,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
-                        .background(
-                            if (rangeStart != null && rangeEnd != null) AppColors.Primary
-                            else AppColors.Primary.copy(alpha = 0.3f)
-                        )
-                        .clickable(enabled = rangeStart != null && rangeEnd != null) {
-                            val de  = rangeStart?.let { tripleToIso(it) } ?: ""
-                            val ate = rangeEnd?.let   { tripleToIso(it) } ?: ""
-                            onApply(de, ate, null)
+                        .background(if (canApply) AppColors.Primary else AppColors.Primary.copy(alpha = 0.3f))
+                        .clickable(enabled = canApply) {
+                            if (pendingPreset != null) {
+                                // Aplica atalho selecionado
+                                val s = shortcuts.find { it.label == pendingPreset }
+                                onApply(s?.de ?: "", s?.ate?.let { if (it == today) "" else it } ?: "", pendingPreset)
+                            } else {
+                                val de  = rangeStart?.let { tripleToIso(it) } ?: ""
+                                val ate = rangeEnd?.let   { tripleToIso(it) } ?: ""
+                                onApply(de, ate, null)
+                            }
                         }
-                        .pointerHoverIcon(
-                            if (rangeStart != null && rangeEnd != null) PointerIcon.Hand else PointerIcon.Default
-                        )
+                        .pointerHoverIcon(if (canApply) PointerIcon.Hand else PointerIcon.Default)
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 )
             }
