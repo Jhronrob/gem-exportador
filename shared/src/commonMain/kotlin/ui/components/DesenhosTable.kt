@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -34,6 +35,16 @@ import util.getDaysAgoDate
 import util.getTodayDate
 import util.VersionInfo
 import util.openInExplorer
+
+/** Período de exibição padrão da tabela */
+enum class PeriodoFiltro(val label: String) {
+    SEMANA("7 dias"),
+    MES("30 dias"),
+    ANO("Este ano"),
+    TUDO("Tudo")
+}
+
+private const val PAGE_SIZE = 50
 
 /**
  * Callback para ações do context menu
@@ -66,23 +77,43 @@ fun DesenhosTable(
 ) {
     // Estado para mostrar/ocultar concluídos
     var mostrarConcluidos by remember { mutableStateOf(false) }
-    
+
+    // Período de exibição selecionado
+    var periodoFiltro by remember { mutableStateOf(PeriodoFiltro.SEMANA) }
+
+    // Paginação dos concluídos (scroll infinito)
+    var concluidosPagina by remember { mutableStateOf(1) }
+    val listState = rememberLazyListState()
+
     // Estado da busca
     var searchQuery by remember { mutableStateOf("") }
     var searchDateDe by remember { mutableStateOf("") }
     var searchDateAte by remember { mutableStateOf("") }
     var buscaAtiva by remember { mutableStateOf(false) }
     var showDateFilter by remember { mutableStateOf(false) }
-    
-    // Dados da semana (padrão: últimos 7 dias corridos incluindo hoje)
-    val dataLimite = remember { getDaysAgoDate(7) }
-    
+
+    // Limite de data conforme período selecionado
+    val dataLimite = remember(periodoFiltro) {
+        when (periodoFiltro) {
+            PeriodoFiltro.SEMANA -> getDaysAgoDate(7)
+            PeriodoFiltro.MES    -> getDaysAgoDate(30)
+            PeriodoFiltro.ANO    -> "${getTodayDate().take(4)}-01-01"
+            PeriodoFiltro.TUDO   -> ""
+        }
+    }
+
+    // Reseta paginação ao trocar período ou busca
+    LaunchedEffect(periodoFiltro, buscaAtiva) {
+        concluidosPagina = 1
+    }
+
     val desenhosSemana = remember(desenhos, dataLimite) {
         desenhos.filter { d ->
             // Pendentes e processando sempre visíveis
             if (d.statusEnum == DesenhoStatus.PENDENTE || d.statusEnum == DesenhoStatus.PROCESSANDO) {
                 return@filter true
             }
+            if (dataLimite.isEmpty()) return@filter true
             val dataEnvio = extractDate(d.horarioEnvio)
             dataEnvio >= dataLimite
         }
@@ -137,15 +168,29 @@ fun DesenhosTable(
         Triple(fila, ok, problema)
     }
     
-    // Lista final: fila → erros/cancelados → concluídos (no final)
-    val desenhosExibidos = remember(emFila, concluidos, comProblema, mostrarConcluidos) {
+    // Página atual dos concluídos (scroll infinito)
+    val concluidosPaginados = remember(concluidos, concluidosPagina) {
+        concluidos.take(concluidosPagina * PAGE_SIZE)
+    }
+
+    // Lista final: fila → erros/cancelados → concluídos paginados
+    val desenhosExibidos = remember(emFila, concluidosPaginados, comProblema, mostrarConcluidos) {
         val lista = mutableListOf<DesenhoAutodesk>()
         lista.addAll(emFila)
         lista.addAll(comProblema)
         if (mostrarConcluidos) {
-            lista.addAll(concluidos)
+            lista.addAll(concluidosPaginados)
         }
         lista
+    }
+
+    // Carrega mais concluídos quando chega perto do fim da lista
+    LaunchedEffect(listState.firstVisibleItemIndex) {
+        val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
+        val total = listState.layoutInfo.totalItemsCount
+        if (mostrarConcluidos && last >= total - 8 && concluidosPaginados.size < concluidos.size) {
+            concluidosPagina++
+        }
     }
     
     // Dialog de filtro por data (Range Picker)
@@ -186,6 +231,8 @@ fun DesenhosTable(
                 cancelados = comProblema.count { it.statusEnum == DesenhoStatus.CANCELADO },
                 mostrarConcluidos = mostrarConcluidos,
                 onToggleConcluidos = { mostrarConcluidos = !mostrarConcluidos },
+                periodoFiltro = periodoFiltro,
+                onPeriodoChange = { periodoFiltro = it },
                 updateAvailable = updateAvailable,
                 onUpdateClick = onUpdateClick,
                 isCompact = isCompact,
@@ -219,6 +266,7 @@ fun DesenhosTable(
                     EmptyState()
                 } else {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxSize()
                     ) {
                         items(desenhosExibidos, key = { it.id }) { desenho ->
@@ -228,6 +276,31 @@ fun DesenhosTable(
                                 isCompact = isCompact
                             )
                             Divider(color = AppColors.Border, thickness = 1.dp)
+                        }
+                        // Indicador de carregamento quando há mais concluídos
+                        if (mostrarConcluidos && concluidosPaginados.size < concluidos.size) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = AppColors.Primary,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Carregando mais... (${concluidosPaginados.size}/${concluidos.size})",
+                                            color = AppColors.TextMuted,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -270,6 +343,8 @@ private fun Toolbar(
     cancelados: Int,
     mostrarConcluidos: Boolean,
     onToggleConcluidos: () -> Unit,
+    periodoFiltro: PeriodoFiltro = PeriodoFiltro.SEMANA,
+    onPeriodoChange: (PeriodoFiltro) -> Unit = {},
     updateAvailable: VersionInfo? = null,
     onUpdateClick: () -> Unit = {},
     isCompact: Boolean = false,
@@ -281,6 +356,8 @@ private fun Toolbar(
     onDateFilterClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {}
 ) {
+    var showPeriodoMenu by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -301,8 +378,81 @@ private fun Toolbar(
                 StatusBadge(label = "Cancelados", count = cancelados, color = AppColors.BadgeOrange)
             }
         }
-        
+
         Spacer(Modifier.width(10.dp))
+
+        // Seletor de período
+        Box {
+            Row(
+                modifier = Modifier
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(AppColors.Surface)
+                    .border(1.dp, AppColors.Border, RoundedCornerShape(6.dp))
+                    .clickable { showPeriodoMenu = true }
+                    .pointerHoverIcon(PointerIcon.Hand)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DateRange,
+                    contentDescription = "Período",
+                    tint = AppColors.TextSecondary,
+                    modifier = Modifier.size(13.dp)
+                )
+                Text(
+                    text = periodoFiltro.label,
+                    color = AppColors.TextPrimary,
+                    fontSize = 12.sp
+                )
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = AppColors.TextMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            DropdownMenu(
+                expanded = showPeriodoMenu,
+                onDismissRequest = { showPeriodoMenu = false },
+                modifier = Modifier
+                    .background(AppColors.Surface)
+                    .border(1.dp, AppColors.Border, RoundedCornerShape(8.dp))
+            ) {
+                PeriodoFiltro.entries.forEach { opcao ->
+                    DropdownMenuItem(
+                        onClick = {
+                            onPeriodoChange(opcao)
+                            showPeriodoMenu = false
+                        }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (opcao == periodoFiltro) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = AppColors.Primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                Spacer(Modifier.size(14.dp))
+                            }
+                            Text(
+                                text = opcao.label,
+                                color = if (opcao == periodoFiltro) AppColors.Primary else AppColors.TextPrimary,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
 
         // Input de busca
         Row(
