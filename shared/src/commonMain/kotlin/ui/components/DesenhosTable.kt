@@ -36,14 +36,6 @@ import util.getTodayDate
 import util.VersionInfo
 import util.openInExplorer
 
-/** Período de exibição padrão da tabela */
-enum class PeriodoFiltro(val label: String) {
-    SEMANA("7 dias"),
-    MES("30 dias"),
-    ANO("Este ano"),
-    TUDO("Tudo")
-}
-
 private const val PAGE_SIZE = 50
 
 /**
@@ -78,73 +70,35 @@ fun DesenhosTable(
     // Estado para mostrar/ocultar concluídos
     var mostrarConcluidos by remember { mutableStateOf(false) }
 
-    // Período de exibição selecionado
-    var periodoFiltro by remember { mutableStateOf(PeriodoFiltro.SEMANA) }
+    // Filtro unificado: data início/fim + busca por nome
+    // Padrão: últimos 7 dias (preset inicial)
+    var filterDateDe by remember { mutableStateOf(getDaysAgoDate(7)) }
+    var filterDateAte by remember { mutableStateOf("") }
+    var activePreset by remember { mutableStateOf<String?>("7 dias") }
+    var searchQuery by remember { mutableStateOf("") }
+    var showDateFilter by remember { mutableStateOf(false) }
 
     // Paginação dos concluídos (scroll infinito)
     var concluidosPagina by remember { mutableStateOf(1) }
     val listState = rememberLazyListState()
 
-    // Estado da busca
-    var searchQuery by remember { mutableStateOf("") }
-    var searchDateDe by remember { mutableStateOf("") }
-    var searchDateAte by remember { mutableStateOf("") }
-    var buscaAtiva by remember { mutableStateOf(false) }
-    var showDateFilter by remember { mutableStateOf(false) }
-
-    // Limite de data conforme período selecionado
-    val dataLimite = remember(periodoFiltro) {
-        when (periodoFiltro) {
-            PeriodoFiltro.SEMANA -> getDaysAgoDate(7)
-            PeriodoFiltro.MES    -> getDaysAgoDate(30)
-            PeriodoFiltro.ANO    -> "${getTodayDate().take(4)}-01-01"
-            PeriodoFiltro.TUDO   -> ""
-        }
-    }
-
-    // Reseta paginação ao trocar período ou busca
-    LaunchedEffect(periodoFiltro, buscaAtiva) {
+    // Reseta paginação quando o filtro muda
+    LaunchedEffect(filterDateDe, filterDateAte, searchQuery) {
         concluidosPagina = 1
     }
 
-    val desenhosSemana = remember(desenhos, dataLimite) {
+    // Filtro unificado: data + nome em uma única passagem
+    val desenhosAtivos = remember(desenhos, filterDateDe, filterDateAte, searchQuery) {
         desenhos.filter { d ->
-            // Pendentes e processando sempre visíveis
-            if (d.statusEnum == DesenhoStatus.PENDENTE || d.statusEnum == DesenhoStatus.PROCESSANDO) {
-                return@filter true
-            }
-            if (dataLimite.isEmpty()) return@filter true
+            if (d.statusEnum == DesenhoStatus.PENDENTE || d.statusEnum == DesenhoStatus.PROCESSANDO) return@filter true
             val dataEnvio = extractDate(d.horarioEnvio)
-            dataEnvio >= dataLimite
+            val inDate = (filterDateDe.isBlank() || dataEnvio >= filterDateDe) &&
+                         (filterDateAte.isBlank() || dataEnvio <= filterDateAte)
+            val inName = searchQuery.isBlank() || d.nomeArquivo.contains(searchQuery, ignoreCase = true)
+            inDate && inName
         }
     }
-    
-    // Dados da busca (quando ativa)
-    val desenhosBusca = remember(desenhos, searchQuery, searchDateDe, searchDateAte, buscaAtiva) {
-        if (!buscaAtiva) return@remember emptyList<DesenhoAutodesk>()
-        
-        desenhos.filter { d ->
-            // Filtro por nome
-            val matchNome = searchQuery.isBlank() || 
-                d.nomeArquivo.contains(searchQuery, ignoreCase = true)
-            
-            // Filtro por data (datas já em formato ISO yyyy-MM-dd)
-            val matchData = if (searchDateDe.isNotBlank() || searchDateAte.isNotBlank()) {
-                val dataEnvio = extractDate(d.horarioEnvio)
-                val matchDe = searchDateDe.isBlank() || dataEnvio >= searchDateDe
-                val matchAte = searchDateAte.isBlank() || dataEnvio <= searchDateAte
-                matchDe && matchAte
-            } else {
-                true
-            }
-            
-            matchNome && matchData
-        }
-    }
-    
-    // Fonte de dados: busca ativa ou dados semanais
-    val desenhosAtivos = if (buscaAtiva) desenhosBusca else desenhosSemana
-    
+
     // Separar desenhos por categoria
     val (emFila, concluidos, comProblema) = remember(desenhosAtivos) {
         val fila = mutableListOf<DesenhoAutodesk>()
@@ -178,35 +132,32 @@ fun DesenhosTable(
         val lista = mutableListOf<DesenhoAutodesk>()
         lista.addAll(emFila)
         lista.addAll(comProblema)
-        if (mostrarConcluidos) {
-            lista.addAll(concluidosPaginados)
-        }
+        if (mostrarConcluidos) lista.addAll(concluidosPaginados)
         lista
     }
 
-    // Carrega mais concluídos quando chega perto do fim da lista
-    LaunchedEffect(listState.firstVisibleItemIndex) {
-        val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
-        val total = listState.layoutInfo.totalItemsCount
-        if (mostrarConcluidos && last >= total - 8 && concluidosPaginados.size < concluidos.size) {
-            concluidosPagina++
+    // Detecção de scroll infinito via derivedStateOf (dispara sempre que layoutInfo muda)
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val total = listState.layoutInfo.totalItemsCount
+            mostrarConcluidos && total > 0 && last >= total - 8 && concluidosPaginados.size < concluidos.size
         }
     }
-    
-    // Dialog de filtro por data (Range Picker)
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) concluidosPagina++
+    }
+
+    // Dialog unificado: atalhos de período + calendário customizado
     if (showDateFilter) {
         DateRangePickerDialog(
-            currentDe = searchDateDe,
-            currentAte = searchDateAte,
-            onApply = { de, ate ->
-                searchDateDe = de  // formato ISO yyyy-MM-dd
-                searchDateAte = ate
-                buscaAtiva = searchQuery.isNotBlank() || de.isNotBlank() || ate.isNotBlank()
-                showDateFilter = false
-            },
-            onClear = {
-                searchDateDe = ""
-                searchDateAte = ""
+            currentDe = filterDateDe,
+            currentAte = filterDateAte,
+            activePreset = activePreset,
+            onApply = { de, ate, preset ->
+                filterDateDe = de
+                filterDateAte = ate
+                activePreset = preset
                 showDateFilter = false
             },
             onDismiss = { showDateFilter = false }
@@ -231,25 +182,15 @@ fun DesenhosTable(
                 cancelados = comProblema.count { it.statusEnum == DesenhoStatus.CANCELADO },
                 mostrarConcluidos = mostrarConcluidos,
                 onToggleConcluidos = { mostrarConcluidos = !mostrarConcluidos },
-                periodoFiltro = periodoFiltro,
-                onPeriodoChange = { periodoFiltro = it },
+                periodoLabel = activePreset ?: "Personalizado",
+                hasDateFilter = filterDateDe.isNotBlank() || filterDateAte.isNotBlank(),
+                onDateFilterClick = { showDateFilter = true },
                 updateAvailable = updateAvailable,
                 onUpdateClick = onUpdateClick,
                 isCompact = isCompact,
                 searchQuery = searchQuery,
-                onSearchChange = { query ->
-                    searchQuery = query
-                    buscaAtiva = query.isNotBlank() || searchDateDe.isNotBlank() || searchDateAte.isNotBlank()
-                },
-                onClearSearch = {
-                    searchQuery = ""
-                    searchDateDe = ""
-                    searchDateAte = ""
-                    buscaAtiva = false
-                },
-                buscaAtiva = buscaAtiva,
-                hasDateFilter = searchDateDe.isNotBlank() || searchDateAte.isNotBlank(),
-                onDateFilterClick = { showDateFilter = true },
+                onSearchChange = { searchQuery = it },
+                onClearSearch = { searchQuery = "" },
                 onSettingsClick = onSettingsClick
             )
             
@@ -343,21 +284,17 @@ private fun Toolbar(
     cancelados: Int,
     mostrarConcluidos: Boolean,
     onToggleConcluidos: () -> Unit,
-    periodoFiltro: PeriodoFiltro = PeriodoFiltro.SEMANA,
-    onPeriodoChange: (PeriodoFiltro) -> Unit = {},
+    periodoLabel: String = "7 dias",
+    hasDateFilter: Boolean = false,
+    onDateFilterClick: () -> Unit = {},
     updateAvailable: VersionInfo? = null,
     onUpdateClick: () -> Unit = {},
     isCompact: Boolean = false,
     searchQuery: String = "",
     onSearchChange: (String) -> Unit = {},
     onClearSearch: () -> Unit = {},
-    buscaAtiva: Boolean = false,
-    hasDateFilter: Boolean = false,
-    onDateFilterClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {}
 ) {
-    var showPeriodoMenu by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -381,75 +318,40 @@ private fun Toolbar(
 
         Spacer(Modifier.width(10.dp))
 
-        // Seletor de período
-        Box {
-            Row(
-                modifier = Modifier
-                    .height(32.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(AppColors.Surface)
-                    .border(1.dp, AppColors.Border, RoundedCornerShape(6.dp))
-                    .clickable { showPeriodoMenu = true }
-                    .pointerHoverIcon(PointerIcon.Hand)
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.DateRange,
-                    contentDescription = "Período",
-                    tint = AppColors.TextSecondary,
-                    modifier = Modifier.size(13.dp)
+        // Botão de período/calendário unificado
+        Row(
+            modifier = Modifier
+                .height(32.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (hasDateFilter) AppColors.Primary.copy(alpha = 0.12f) else AppColors.Surface)
+                .border(
+                    1.dp,
+                    if (hasDateFilter) AppColors.Primary.copy(alpha = 0.5f) else AppColors.Border,
+                    RoundedCornerShape(6.dp)
                 )
-                Text(
-                    text = periodoFiltro.label,
-                    color = AppColors.TextPrimary,
-                    fontSize = 12.sp
-                )
-                Icon(
-                    imageVector = Icons.Filled.ArrowDropDown,
-                    contentDescription = null,
-                    tint = AppColors.TextMuted,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            DropdownMenu(
-                expanded = showPeriodoMenu,
-                onDismissRequest = { showPeriodoMenu = false },
-                modifier = Modifier
-                    .background(AppColors.Surface)
-                    .border(1.dp, AppColors.Border, RoundedCornerShape(8.dp))
-            ) {
-                PeriodoFiltro.entries.forEach { opcao ->
-                    DropdownMenuItem(
-                        onClick = {
-                            onPeriodoChange(opcao)
-                            showPeriodoMenu = false
-                        }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (opcao == periodoFiltro) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = AppColors.Primary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            } else {
-                                Spacer(Modifier.size(14.dp))
-                            }
-                            Text(
-                                text = opcao.label,
-                                color = if (opcao == periodoFiltro) AppColors.Primary else AppColors.TextPrimary,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                }
-            }
+                .clickable { onDateFilterClick() }
+                .pointerHoverIcon(PointerIcon.Hand)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.DateRange,
+                contentDescription = "Filtro de período",
+                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextSecondary,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = periodoLabel,
+                color = if (hasDateFilter) AppColors.Primary else AppColors.TextPrimary,
+                fontSize = 12.sp
+            )
+            Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextMuted,
+                modifier = Modifier.size(16.dp)
+            )
         }
 
         Spacer(Modifier.width(8.dp))
@@ -472,7 +374,7 @@ private fun Toolbar(
                 tint = AppColors.TextMuted,
                 modifier = Modifier.size(14.dp)
             )
-            
+
             androidx.compose.foundation.text.BasicTextField(
                 value = searchQuery,
                 onValueChange = onSearchChange,
@@ -492,8 +394,8 @@ private fun Toolbar(
                     }
                 }
             )
-            
-            if (buscaAtiva) {
+
+            if (searchQuery.isNotEmpty()) {
                 Icon(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "Limpar",
@@ -504,31 +406,6 @@ private fun Toolbar(
                         .pointerHoverIcon(PointerIcon.Hand)
                 )
             }
-        }
-        
-        Spacer(Modifier.width(4.dp))
-        
-        // Botão filtro de data
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (hasDateFilter) AppColors.Primary.copy(alpha = 0.15f) else AppColors.Surface)
-                .border(
-                    1.dp,
-                    if (hasDateFilter) AppColors.Primary.copy(alpha = 0.5f) else AppColors.Border,
-                    RoundedCornerShape(6.dp)
-                )
-                .clickable { onDateFilterClick() }
-                .pointerHoverIcon(PointerIcon.Hand),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Filled.DateRange,
-                contentDescription = "Filtrar por data",
-                tint = if (hasDateFilter) AppColors.Primary else AppColors.TextSecondary,
-                modifier = Modifier.size(16.dp)
-            )
         }
 
         // Spacer empurra concluídos para a direita
@@ -1319,64 +1196,67 @@ private fun isBetween(
     end: Triple<Int, Int, Int>
 ): Boolean = tripleCompare(day, start) >= 0 && tripleCompare(day, end) <= 0
 
+/** Atalho de período rápido exibido no picker */
+private data class PeriodoShortcut(val label: String, val de: String, val ate: String)
+
 /**
- * Date Range Picker Dialog - estilo shadcn/ui com 2 calendários lado a lado
+ * Date Range Picker unificado — atalhos de período rápido + calendário customizado
  */
 @Composable
 private fun DateRangePickerDialog(
     currentDe: String,
     currentAte: String,
-    onApply: (de: String, ate: String) -> Unit,
-    onClear: () -> Unit,
+    activePreset: String?,
+    onApply: (de: String, ate: String, preset: String?) -> Unit,
     onDismiss: () -> Unit
 ) {
-    // Parse initial values
+    val today = getTodayDate()
+    val year = today.take(4)
+
+    // Atalhos calculados uma vez
+    val shortcuts = remember {
+        listOf(
+            PeriodoShortcut("7 dias",       getDaysAgoDate(7),  ""),
+            PeriodoShortcut("30 dias",      getDaysAgoDate(30), ""),
+            PeriodoShortcut("Este ano",     "$year-01-01",      ""),
+            PeriodoShortcut("Todo período", "",                 "")
+        )
+    }
+
     val initStart = if (currentDe.isNotBlank()) isoToTriple(currentDe) else null
-    val initEnd = if (currentAte.isNotBlank()) isoToTriple(currentAte) else null
+    val initEnd   = if (currentAte.isNotBlank()) isoToTriple(currentAte) else null
 
     var rangeStart by remember { mutableStateOf(initStart) }
-    var rangeEnd by remember { mutableStateOf(initEnd) }
+    var rangeEnd   by remember { mutableStateOf(initEnd) }
     var hoveredDay by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) }
 
-    // Determine initial left month
-    val today = getTodayDate() // yyyy-MM-dd
     val todayTriple = isoToTriple(today) ?: Triple(2026, 1, 1)
     val initYm = if (initStart != null) YearMonth(initStart.first, initStart.second)
                  else YearMonth(todayTriple.first, todayTriple.second)
     var leftMonth by remember { mutableStateOf(initYm) }
     val rightMonth = leftMonth.next()
 
-    val hasSelection = rangeStart != null
-
     fun onDayClick(day: Triple<Int, Int, Int>) {
         if (rangeStart == null || rangeEnd != null) {
-            // Start new selection
-            rangeStart = day
-            rangeEnd = null
+            rangeStart = day; rangeEnd = null
         } else {
-            // Complete selection
             if (tripleCompare(day, rangeStart!!) < 0) {
-                rangeEnd = rangeStart
-                rangeStart = day
+                rangeEnd = rangeStart; rangeStart = day
             } else {
                 rangeEnd = day
             }
         }
     }
 
-    // Effective end for hover preview
-    val effectiveEnd: Triple<Int, Int, Int>? = rangeEnd ?: if (rangeStart != null && hoveredDay != null) {
-        if (tripleCompare(hoveredDay!!, rangeStart!!) >= 0) hoveredDay else null
-    } else null
-
-    val effectiveStart: Triple<Int, Int, Int>? = if (rangeEnd == null && rangeStart != null && hoveredDay != null && tripleCompare(hoveredDay!!, rangeStart!!) < 0) {
-        hoveredDay
-    } else rangeStart
+    val effectiveEnd: Triple<Int, Int, Int>? = rangeEnd ?: if (rangeStart != null && hoveredDay != null &&
+        tripleCompare(hoveredDay!!, rangeStart!!) >= 0) hoveredDay else null
+    val effectiveStart: Triple<Int, Int, Int>? = if (rangeEnd == null && rangeStart != null &&
+        hoveredDay != null && tripleCompare(hoveredDay!!, rangeStart!!) < 0) hoveredDay else rangeStart
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(580.dp)
+                .width(600.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(AppColors.Surface)
                 .border(1.dp, AppColors.Border, RoundedCornerShape(12.dp))
@@ -1391,16 +1271,16 @@ private fun DateRangePickerDialog(
             ) {
                 Column {
                     Text(
-                        text = "Selecionar período",
+                        text = "Filtrar período",
                         color = AppColors.TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     val startText = rangeStart?.let { formatDateBr(tripleToIso(it)) } ?: "—"
-                    val endText = rangeEnd?.let { formatDateBr(tripleToIso(it)) } ?: "—"
+                    val endText   = rangeEnd?.let   { formatDateBr(tripleToIso(it)) } ?: "—"
                     Text(
                         text = "$startText  →  $endText",
-                        color = if (hasSelection) AppColors.Primary else AppColors.TextMuted,
+                        color = if (rangeStart != null) AppColors.Primary else AppColors.TextMuted,
                         fontSize = 12.sp
                     )
                 }
@@ -1418,11 +1298,66 @@ private fun DateRangePickerDialog(
 
             Divider(color = AppColors.Border)
 
-            // Calendars row
+            // Atalhos de período rápido
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
+                    .background(AppColors.SurfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                shortcuts.forEach { shortcut ->
+                    val isActive = activePreset == shortcut.label
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (isActive) AppColors.Primary.copy(alpha = 0.15f) else AppColors.Surface
+                            )
+                            .border(
+                                1.dp,
+                                if (isActive) AppColors.Primary.copy(alpha = 0.6f) else AppColors.Border,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { onApply(shortcut.de, shortcut.ate, shortcut.label) }
+                            .pointerHoverIcon(PointerIcon.Hand)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = shortcut.label,
+                            color = if (isActive) AppColors.Primary else AppColors.TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+
+            Divider(color = AppColors.Border)
+
+            // Separador com título
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(modifier = Modifier.weight(1f).height(1.dp).background(AppColors.Border))
+                Text(
+                    text = "ou selecione manualmente",
+                    color = AppColors.TextMuted,
+                    fontSize = 11.sp
+                )
+                Box(modifier = Modifier.weight(1f).height(1.dp).background(AppColors.Border))
+            }
+
+            // Calendários
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 CalendarMonth(
@@ -1433,16 +1368,10 @@ private fun DateRangePickerDialog(
                     onDayClick = ::onDayClick,
                     onDayHover = { hoveredDay = it },
                     onPrevMonth = { leftMonth = leftMonth.prev() },
-                    onNextMonth = null, // nav only on edges
+                    onNextMonth = null,
                     modifier = Modifier.weight(1f)
                 )
-                // Separador vertical
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(260.dp)
-                        .background(AppColors.Border)
-                )
+                Box(modifier = Modifier.width(1.dp).height(260.dp).background(AppColors.Border))
                 CalendarMonth(
                     yearMonth = rightMonth,
                     rangeStart = effectiveStart,
@@ -1466,18 +1395,6 @@ private fun DateRangePickerDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (currentDe.isNotBlank() || currentAte.isNotBlank()) {
-                    Text(
-                        text = "Limpar",
-                        color = AppColors.BadgeRed,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable { onClear() }
-                            .pointerHoverIcon(PointerIcon.Hand)
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                    )
-                }
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = "Cancelar",
@@ -1491,7 +1408,7 @@ private fun DateRangePickerDialog(
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 )
                 Text(
-                    text = "Aplicar",
+                    text = "Aplicar intervalo",
                     color = if (rangeStart != null && rangeEnd != null) AppColors.TextPrimary else AppColors.TextMuted,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
@@ -1502,13 +1419,12 @@ private fun DateRangePickerDialog(
                             else AppColors.Primary.copy(alpha = 0.3f)
                         )
                         .clickable(enabled = rangeStart != null && rangeEnd != null) {
-                            val de = rangeStart?.let { tripleToIso(it) } ?: ""
-                            val ate = rangeEnd?.let { tripleToIso(it) } ?: ""
-                            onApply(de, ate)
+                            val de  = rangeStart?.let { tripleToIso(it) } ?: ""
+                            val ate = rangeEnd?.let   { tripleToIso(it) } ?: ""
+                            onApply(de, ate, null)
                         }
                         .pointerHoverIcon(
-                            if (rangeStart != null && rangeEnd != null) PointerIcon.Hand
-                            else PointerIcon.Default
+                            if (rangeStart != null && rangeEnd != null) PointerIcon.Hand else PointerIcon.Default
                         )
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 )
