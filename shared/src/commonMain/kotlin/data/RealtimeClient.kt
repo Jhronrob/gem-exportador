@@ -1,7 +1,11 @@
 package data
 
 import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.websocket.*
+import io.ktor.client.request.*
+import io.ktor.serialization.kotlinx.json.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -58,9 +62,19 @@ class RealtimeClient(
     private val serverUrl: String,
     private val repository: IDesenhoRepository
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /** URL HTTP base derivada da URL WebSocket: ws://host:port/ws → http://host:port */
+    private val httpBaseUrl: String = serverUrl
+        .replace(Regex("^ws://"), "http://")
+        .replace(Regex("^wss://"), "https://")
+        .replace(Regex("/ws$"), "")
+
     private val client = HttpClient {
         install(WebSockets)
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true; isLenient = true })
+        }
     }
 
     private val _events = MutableSharedFlow<RealtimeEvent>(replay = 1)
@@ -90,21 +104,34 @@ class RealtimeClient(
     }
 
     /**
-     * Conecta ao servidor WebSocket
+     * Conecta ao servidor.
+     * Passo 1: busca TODOS os registros via HTTP GET /api/desenhos/all (sem limite).
+     * Passo 2: conecta o WebSocket apenas para receber INSERT/UPDATE/DELETE em tempo real.
      */
     suspend fun connect() {
         if (_connectionState.value == ConnectionState.CONNECTED) return
 
         _connectionState.value = ConnectionState.CONNECTING
 
+        // --- Carga inicial via HTTP (sem limite de registros) ---
+        try {
+            val url = "$httpBaseUrl/api/desenhos/all"
+            logToFile("INFO", "Buscando dados iniciais via HTTP: $url")
+            val desenhos: List<DesenhoAutodesk> = client.get(url).body()
+            repository.upsertAll(desenhos)
+            logToFile("INFO", "Carga inicial HTTP: ${desenhos.size} desenhos carregados")
+            _events.emit(RealtimeEvent.InitialData(desenhos))
+        } catch (e: Exception) {
+            logToFile("WARN", "Carga inicial HTTP falhou (tentando via WS): ${e.message}")
+        }
+
+        // --- WebSocket apenas para atualizações em tempo real ---
         try {
             client.webSocket(serverUrl) {
                 wsSession = this
                 _connectionState.value = ConnectionState.CONNECTED
                 logToFile("INFO", "WebSocket conectado a $serverUrl")
                 _events.emit(RealtimeEvent.Connected)
-
-                send(Frame.Text("""{"type":"subscribe","table":"desenhos"}"""))
 
                 for (frame in incoming) {
                     when (frame) {
@@ -134,12 +161,15 @@ class RealtimeClient(
     }
 
     /**
-     * Forca refresh dos dados (reenvia subscribe para receber initial completo)
+     * Força refresh dos dados via HTTP (F5 no viewer).
      */
     suspend fun refresh() {
         try {
-            wsSession?.send(Frame.Text("""{"type":"subscribe","table":"desenhos"}"""))
-            logToFile("INFO", "WebSocket refresh solicitado (F5)")
+            val url = "$httpBaseUrl/api/desenhos/all"
+            val desenhos: List<DesenhoAutodesk> = client.get(url).body()
+            repository.upsertAll(desenhos)
+            logToFile("INFO", "Refresh HTTP: ${desenhos.size} desenhos recarregados")
+            _events.emit(RealtimeEvent.InitialData(desenhos))
         } catch (e: Exception) {
             logToFile("ERROR", "Erro ao solicitar refresh: ${e.message}")
         }

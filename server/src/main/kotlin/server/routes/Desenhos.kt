@@ -73,7 +73,7 @@ data class CancelResponse(
 private val queuePositionLock = Any()
 
 fun Route.apiDesenhos(desenhoDao: DesenhoDao, queue: ProcessingQueue, broadcast: Broadcast) {
-    // GET /api/desenhos - lista com filtros
+    // GET /api/desenhos - lista com filtros e paginação
     get("/api/desenhos") {
         val status = call.request.queryParameters["status"]
         val computador = call.request.queryParameters["computador"]
@@ -82,6 +82,11 @@ fun Route.apiDesenhos(desenhoDao: DesenhoDao, queue: ProcessingQueue, broadcast:
         val desenhos = desenhoDao.list(status = status, computador = computador, limit = limit, offset = offset)
         val total = desenhoDao.count(status)
         call.respond(ListResponse(desenhos, total, limit, offset))
+    }
+
+    // GET /api/desenhos/all - retorna TODOS os registros sem limite (usado pelo viewer na carga inicial)
+    get("/api/desenhos/all") {
+        call.respond(desenhoDao.listAll())
     }
 
     // POST /api/desenhos/upload - upload (multipart)

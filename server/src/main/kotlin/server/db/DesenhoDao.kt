@@ -5,6 +5,15 @@ import java.sql.ResultSet
 
 class DesenhoDao(private val database: Database) {
 
+    /** Retorna TODOS os registros sem LIMIT — usado pelo endpoint /api/desenhos/all para o viewer. */
+    fun listAll(): List<DesenhoAutodesk> {
+        return database.connection().use { conn ->
+            conn.prepareStatement("SELECT * FROM desenho ORDER BY horario_envio DESC").use { stmt ->
+                stmt.executeQuery().use { rs -> rs.map { it.toDesenho() } }
+            }
+        }
+    }
+
     fun list(status: String? = null, computador: String? = null, limit: Int = 50, offset: Int = 0): List<DesenhoAutodesk> {
         val sql = buildString {
             append("SELECT * FROM desenho WHERE 1=1 ")
