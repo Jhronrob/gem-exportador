@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -136,16 +138,22 @@ fun DesenhosTable(
         lista
     }
 
-    // Detecção de scroll infinito via derivedStateOf (dispara sempre que layoutInfo muda)
-    val shouldLoadMore by remember {
-        derivedStateOf {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val total = listState.layoutInfo.totalItemsCount
-            mostrarConcluidos && total > 0 && last >= total - 8 && concluidosPaginados.size < concluidos.size
+    // Scroll infinito: snapshotFlow rastreia a posição real da lista.
+    // distinctUntilChanged evita disparos duplicados; delay(200) garante que o
+    // layout atualize antes de checar novamente — sem cascata e sem trava.
+    val totalConcluidos = concluidos.size
+    LaunchedEffect(listState, mostrarConcluidos) {
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 to
+            listState.layoutInfo.totalItemsCount
         }
-    }
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) concluidosPagina++
+        .distinctUntilChanged()
+        .collect { (last, total) ->
+            if (mostrarConcluidos && total > 0 && last >= total - 5 && concluidosPagina * PAGE_SIZE < totalConcluidos) {
+                concluidosPagina++
+                delay(200) // aguarda layout atualizar antes de re-verificar
+            }
+        }
     }
 
     // Dialog unificado: atalhos de período + calendário customizado
