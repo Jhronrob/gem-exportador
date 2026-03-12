@@ -1,11 +1,9 @@
 package util
 
 import io.ktor.client.*
-import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
-import io.ktor.serialization.kotlinx.json.*
+import io.ktor.client.statement.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -30,14 +28,8 @@ object UpdateChecker {
     private const val VERSION_JSON_URL =
         "https://gist.githubusercontent.com/afonsoburginski/c6b0d49af57e8869284b86bc45df8519/raw/version.json"
 
-    private val client = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                isLenient = true
-            })
-        }
-    }
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val client = HttpClient(CIO)
 
     /**
      * Verifica se há uma versão mais nova disponível.
@@ -45,10 +37,11 @@ object UpdateChecker {
      */
     suspend fun checkForUpdate(): VersionInfo? {
         return try {
-            val versionJson: VersionJson = client.get(VERSION_JSON_URL) {
+            val text = client.get(VERSION_JSON_URL) {
                 header("Cache-Control", "no-cache")
                 header("User-Agent", "GemExportador/${AppVersion.current}")
-            }.body()
+            }.bodyAsText()
+            val versionJson = json.decodeFromString<VersionJson>(text)
 
             val remoteVersion = versionJson.version.removePrefix("v")
 

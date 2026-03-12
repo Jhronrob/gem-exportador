@@ -223,6 +223,34 @@ fun DesenhosTable(
                 }
             }
 
+            // Rodapé: contagem de registros exibidos
+            Divider(color = AppColors.Border, thickness = 1.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AppColors.SurfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                val totalExibido = desenhosExibidos.size
+                val totalConcluidos = concluidos.size
+                Text(
+                    text = if (mostrarConcluidos)
+                        "$totalExibido registros exibidos ($totalConcluidos concluídos)"
+                    else
+                        "$totalExibido registros exibidos",
+                    color = AppColors.TextMuted,
+                    fontSize = 11.sp
+                )
+                if (filterDateDe.isNotBlank() || filterDateAte.isNotBlank() || searchQuery.isNotBlank()) {
+                    Text(
+                        text = "filtro ativo",
+                        color = AppColors.Primary,
+                        fontSize = 11.sp
+                    )
+                }
+            }
         }
     }
 }
