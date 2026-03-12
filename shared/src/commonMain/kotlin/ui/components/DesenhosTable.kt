@@ -138,11 +138,10 @@ fun DesenhosTable(
         lista
     }
 
-    // Scroll infinito: snapshotFlow rastreia a posição real da lista.
-    // distinctUntilChanged evita disparos duplicados; delay(200) garante que o
-    // layout atualize antes de checar novamente — sem cascata e sem trava.
-    val totalConcluidos = concluidos.size
-    LaunchedEffect(listState, mostrarConcluidos) {
+    // Scroll infinito: re-lança quando concluidos.size muda (dados chegam async no viewer)
+    // garantindo que totalConc nunca fique stale dentro do collect.
+    val totalConc = concluidos.size
+    LaunchedEffect(listState, mostrarConcluidos, totalConc) {
         snapshotFlow {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             val total = listState.layoutInfo.totalItemsCount
@@ -152,9 +151,9 @@ fun DesenhosTable(
         .collect { pair ->
             val last = pair.first
             val total = pair.second
-            if (mostrarConcluidos && total > 0 && last >= total - 5 && concluidosPagina * PAGE_SIZE < totalConcluidos) {
+            if (mostrarConcluidos && total > 0 && last >= total - 5 && concluidosPagina * PAGE_SIZE < totalConc) {
                 concluidosPagina++
-                delay(200)
+                delay(100)
             }
         }
     }
