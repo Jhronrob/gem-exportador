@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.coroutines.delay
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -36,6 +37,8 @@ import util.getTodayDate
 import util.VersionInfo
 import util.openInExplorer
 
+
+private const val PAGE_SIZE = 50
 
 /**
  * Callback para ações do context menu
@@ -78,6 +81,9 @@ fun DesenhosTable(
     var showDateFilter by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
+    // Quantidade de concluídos visíveis (scroll infinito: 50 por vez)
+    var visibleCount by remember { mutableStateOf(PAGE_SIZE) }
+
     // Filtro unificado: data + nome em uma única passagem
     val desenhosAtivos = remember(desenhos, filterDateDe, filterDateAte, searchQuery) {
         desenhos.filter { d ->
@@ -113,14 +119,44 @@ fun DesenhosTable(
         Triple(fila, ok, problema)
     }
 
-    // Lista final: fila → erros/cancelados → todos os concluídos
-    // LazyColumn já virtualiza a renderização — só desenha o que está visível na tela
-    val desenhosExibidos = remember(emFila, concluidos, comProblema, mostrarConcluidos) {
+    // Reseta a paginação quando o filtro ou a seção muda
+    LaunchedEffect(filterDateDe, filterDateAte, searchQuery, mostrarConcluidos) {
+        visibleCount = PAGE_SIZE
+    }
+
+    // Concluídos paginados: só os primeiros `visibleCount` itens
+    val concluidosPaginados = remember(concluidos, visibleCount) {
+        concluidos.take(visibleCount)
+    }
+    val temMais = mostrarConcluidos && concluidosPaginados.size < concluidos.size
+
+    // Lista final: fila → erros/cancelados → concluídos paginados
+    val desenhosExibidos = remember(emFila, concluidosPaginados, comProblema, mostrarConcluidos) {
         val lista = mutableListOf<DesenhoAutodesk>()
         lista.addAll(emFila)
         lista.addAll(comProblema)
-        if (mostrarConcluidos) lista.addAll(concluidos)
+        if (mostrarConcluidos) lista.addAll(concluidosPaginados)
         lista
+    }
+
+    // Detecta quando o usuário está perto do final da lista (3 itens antes do fim)
+    val isNearBottom by remember {
+        derivedStateOf {
+            if (!mostrarConcluidos) return@derivedStateOf false
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                ?: return@derivedStateOf false
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && last >= total - 3
+        }
+    }
+
+    // Carrega próxima página quando o usuário chega perto do fim
+    LaunchedEffect(isNearBottom, visibleCount) {
+        if (!isNearBottom || visibleCount >= concluidos.size) return@LaunchedEffect
+        delay(80)
+        if (isNearBottom && visibleCount < concluidos.size) {
+            visibleCount = minOf(visibleCount + PAGE_SIZE, concluidos.size)
+        }
     }
 
     // Dialog unificado: atalhos de período + calendário customizado
@@ -193,6 +229,31 @@ fun DesenhosTable(
                             )
                             Divider(color = AppColors.Border, thickness = 1.dp)
                         }
+                        // Indicador de carregamento: aciona scroll infinito e dá feedback visual
+                        if (temMais) {
+                            item(key = "__loading__") {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = AppColors.Primary,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Carregando mais... (${concluidosPaginados.size} de ${concluidos.size})",
+                                            color = AppColors.TextMuted,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -223,7 +284,7 @@ fun DesenhosTable(
                 }
             }
 
-            // Rodapé: contagem de registros exibidos
+            // Rodapé: contagem sempre visível
             Divider(color = AppColors.Border, thickness = 1.dp)
             Row(
                 modifier = Modifier
@@ -233,14 +294,14 @@ fun DesenhosTable(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                val totalExibido = desenhosExibidos.size
-                val totalConcluidos = concluidos.size
                 Text(
-                    text = if (mostrarConcluidos)
-                        "$totalExibido registros exibidos ($totalConcluidos concluídos)"
+                    text = if (temMais)
+                        "${concluidosPaginados.size} de ${concluidos.size} concluídos — role para carregar mais"
+                    else if (mostrarConcluidos)
+                        "${desenhosExibidos.size} registros exibidos (${concluidos.size} concluídos)"
                     else
-                        "$totalExibido registros exibidos",
-                    color = AppColors.TextMuted,
+                        "${desenhosExibidos.size} registros exibidos",
+                    color = if (temMais) AppColors.Primary else AppColors.TextMuted,
                     fontSize = 11.sp
                 )
                 if (filterDateDe.isNotBlank() || filterDateAte.isNotBlank() || searchQuery.isNotBlank()) {
