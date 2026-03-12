@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -37,7 +36,6 @@ import util.getTodayDate
 import util.VersionInfo
 import util.openInExplorer
 
-private const val PAGE_SIZE = 50
 
 /**
  * Callback para ações do context menu
@@ -78,15 +76,7 @@ fun DesenhosTable(
     var activePreset by remember { mutableStateOf<String?>("7 dias") }
     var searchQuery by remember { mutableStateOf("") }
     var showDateFilter by remember { mutableStateOf(false) }
-
-    // Paginação dos concluídos (scroll infinito)
-    var concluidosPagina by remember { mutableStateOf(1) }
     val listState = rememberLazyListState()
-
-    // Reseta paginação quando o filtro muda
-    LaunchedEffect(filterDateDe, filterDateAte, searchQuery) {
-        concluidosPagina = 1
-    }
 
     // Filtro unificado: data + nome em uma única passagem
     val desenhosAtivos = remember(desenhos, filterDateDe, filterDateAte, searchQuery) {
@@ -105,7 +95,7 @@ fun DesenhosTable(
         val fila = mutableListOf<DesenhoAutodesk>()
         val ok = mutableListOf<DesenhoAutodesk>()
         val problema = mutableListOf<DesenhoAutodesk>()
-        
+
         desenhosAtivos.forEach { d ->
             when (d.statusEnum) {
                 DesenhoStatus.PROCESSANDO, DesenhoStatus.PENDENTE -> fila.add(d)
@@ -113,50 +103,24 @@ fun DesenhosTable(
                 DesenhoStatus.ERRO, DesenhoStatus.CANCELADO -> problema.add(d)
             }
         }
-        
+
         fila.sortWith(compareBy(
             { if (it.statusEnum == DesenhoStatus.PROCESSANDO) 0 else 1 },
             { it.posicaoFila ?: Int.MAX_VALUE },
             { it.horarioEnvio }
         ))
-        
+
         Triple(fila, ok, problema)
     }
-    
-    // Página atual dos concluídos (scroll infinito)
-    val concluidosPaginados = remember(concluidos, concluidosPagina) {
-        concluidos.take(concluidosPagina * PAGE_SIZE)
-    }
 
-    // Lista final: fila → erros/cancelados → concluídos paginados
-    val desenhosExibidos = remember(emFila, concluidosPaginados, comProblema, mostrarConcluidos) {
+    // Lista final: fila → erros/cancelados → todos os concluídos
+    // LazyColumn já virtualiza a renderização — só desenha o que está visível na tela
+    val desenhosExibidos = remember(emFila, concluidos, comProblema, mostrarConcluidos) {
         val lista = mutableListOf<DesenhoAutodesk>()
         lista.addAll(emFila)
         lista.addAll(comProblema)
-        if (mostrarConcluidos) lista.addAll(concluidosPaginados)
+        if (mostrarConcluidos) lista.addAll(concluidos)
         lista
-    }
-
-    // derivedStateOf monitora o scroll de forma reativa sem overhead de coroutine
-    val isNearBottom by remember {
-        derivedStateOf {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-                ?: return@derivedStateOf false
-            val total = listState.layoutInfo.totalItemsCount
-            total > 0 && last >= total - 3
-        }
-    }
-
-    // Carrega mais páginas quando o usuário chega perto do final.
-    // Re-executa quando: posição de scroll muda (isNearBottom), dados chegam (concluidos.size),
-    // ou seção é expandida/colapsada (mostrarConcluidos).
-    LaunchedEffect(isNearBottom, concluidos.size, mostrarConcluidos) {
-        if (!isNearBottom || !mostrarConcluidos) return@LaunchedEffect
-        while (concluidosPagina * PAGE_SIZE < concluidos.size) {
-            concluidosPagina++
-            delay(100)
-            if (!isNearBottom) break
-        }
     }
 
     // Dialog unificado: atalhos de período + calendário customizado
@@ -213,7 +177,7 @@ fun DesenhosTable(
             Divider(color = AppColors.Border, thickness = 1.dp)
             
             // Rows com overlay de refresh
-            Box(modifier = Modifier.weight(1f)) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 if (desenhosExibidos.isEmpty() && !isRefreshing) {
                     EmptyState()
                 } else {
@@ -228,12 +192,6 @@ fun DesenhosTable(
                                 isCompact = isCompact
                             )
                             Divider(color = AppColors.Border, thickness = 1.dp)
-                        }
-                        // Item sentinela no final — aciona o scroll infinito
-                        if (mostrarConcluidos && concluidosPaginados.size < concluidos.size) {
-                            item {
-                                Spacer(modifier = Modifier.height(1.dp))
-                            }
                         }
                     }
                 }
@@ -265,29 +223,6 @@ fun DesenhosTable(
                 }
             }
 
-            // Barra de status fixa — sempre visível quando há mais concluídos para carregar
-            if (mostrarConcluidos && concluidosPaginados.size < concluidos.size) {
-                Divider(color = AppColors.Border, thickness = 1.dp)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(AppColors.SurfaceVariant)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CircularProgressIndicator(
-                        color = AppColors.Primary,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = "Exibindo ${concluidosPaginados.size} de ${concluidos.size} concluídos — role para carregar mais",
-                        color = AppColors.TextMuted,
-                        fontSize = 11.sp
-                    )
-                }
-            }
         }
     }
 }
