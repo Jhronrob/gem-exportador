@@ -144,14 +144,17 @@ fun DesenhosTable(
     val totalConcluidos = concluidos.size
     LaunchedEffect(listState, mostrarConcluidos) {
         snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 to
-            listState.layoutInfo.totalItemsCount
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val total = listState.layoutInfo.totalItemsCount
+            Pair(last, total)
         }
         .distinctUntilChanged()
-        .collect { (last, total) ->
+        .collect { pair ->
+            val last = pair.first
+            val total = pair.second
             if (mostrarConcluidos && total > 0 && last >= total - 5 && concluidosPagina * PAGE_SIZE < totalConcluidos) {
                 concluidosPagina++
-                delay(200) // aguarda layout atualizar antes de re-verificar
+                delay(200)
             }
         }
     }
