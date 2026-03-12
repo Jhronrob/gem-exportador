@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -138,23 +137,25 @@ fun DesenhosTable(
         lista
     }
 
-    // Scroll infinito: re-lança quando concluidos.size muda (dados chegam async no viewer)
-    // garantindo que totalConc nunca fique stale dentro do collect.
-    val totalConc = concluidos.size
-    LaunchedEffect(listState, mostrarConcluidos, totalConc) {
-        snapshotFlow {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+    // derivedStateOf monitora o scroll de forma reativa sem overhead de coroutine
+    val isNearBottom by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                ?: return@derivedStateOf false
             val total = listState.layoutInfo.totalItemsCount
-            Pair(last, total)
+            total > 0 && last >= total - 3
         }
-        .distinctUntilChanged()
-        .collect { pair ->
-            val last = pair.first
-            val total = pair.second
-            if (mostrarConcluidos && total > 0 && last >= total - 5 && concluidosPagina * PAGE_SIZE < totalConc) {
-                concluidosPagina++
-                delay(100)
-            }
+    }
+
+    // Carrega mais páginas quando o usuário chega perto do final.
+    // Re-executa quando: posição de scroll muda (isNearBottom), dados chegam (concluidos.size),
+    // ou seção é expandida/colapsada (mostrarConcluidos).
+    LaunchedEffect(isNearBottom, concluidos.size, mostrarConcluidos) {
+        if (!isNearBottom || !mostrarConcluidos) return@LaunchedEffect
+        while (concluidosPagina * PAGE_SIZE < concluidos.size) {
+            concluidosPagina++
+            delay(100)
+            if (!isNearBottom) break
         }
     }
 
