@@ -31,15 +31,14 @@ fun Application.configureStatusPages() {
     install(io.ktor.server.plugins.statuspages.StatusPages) {
         exception<Throwable> { call, cause ->
             when {
-                // CancellationException é shutdown normal de coroutines — não logar como erro
-                cause is kotlinx.coroutines.CancellationException ->
-                    AppLog.debug("Coroutine cancelada (shutdown normal): ${cause.message}")
-                // Connection reset / broken pipe são desconexões normais de clientes WebSocket
+                // CancellationException é shutdown normal de coroutines — ignorar silenciosamente
+                cause is kotlinx.coroutines.CancellationException -> Unit
+                // Connection reset / broken pipe são desconexões normais de clientes WebSocket — ignorar
                 cause is java.io.IOException && (
                     cause.message?.contains("Connection reset", ignoreCase = true) == true ||
                     cause.message?.contains("Broken pipe", ignoreCase = true) == true ||
                     cause.message?.contains("Connection closed", ignoreCase = true) == true
-                ) -> AppLog.debug("Cliente WebSocket desconectou: ${cause.message}")
+                ) -> Unit
                 else -> {
                     AppLog.error("Exceção não tratada: ${cause.message}", cause)
                     call.respond(io.ktor.http.HttpStatusCode.InternalServerError, mapOf(
