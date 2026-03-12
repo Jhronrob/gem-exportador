@@ -946,9 +946,9 @@ private fun ArquivoCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier,
     }
 }
 
-@Composable
 private val FORMAT_DISPLAY_ORDER = mapOf("pdf" to 1, "dwf" to 2, "dwg" to 10)
 
+@Composable
 private fun FormatosCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier, isCompact: Boolean = false) {
     // Garante ordem de exibição PDF → DWF → DWG, independente da ordem salva no banco
     val formatos = remember(desenho.formatosSolicitadosJson) {
