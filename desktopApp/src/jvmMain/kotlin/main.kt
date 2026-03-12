@@ -30,11 +30,19 @@ import com.sun.jna.ptr.IntByReference
 fun main() {
     // Handler global: captura excecoes nao tratadas para evitar fechamento silencioso
     Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+        // CancellationException e Connection reset sao comportamentos normais — nao logar como FATAL
+        if (throwable is kotlinx.coroutines.CancellationException) return@setDefaultUncaughtExceptionHandler
+        val msg = throwable.message ?: ""
+        if (throwable is java.io.IOException && (
+            msg.contains("Connection reset", ignoreCase = true) ||
+            msg.contains("Broken pipe", ignoreCase = true) ||
+            msg.contains("Connection closed", ignoreCase = true)
+        )) return@setDefaultUncaughtExceptionHandler
         try {
-            util.logToFile("FATAL", "Excecao nao tratada na thread '${thread.name}': ${throwable.message}")
+            util.logToFile("FATAL", "Excecao nao tratada na thread '${thread.name}': $msg")
             util.logToFile("FATAL", "Stack trace: ${throwable.stackTraceToString().take(2000)}")
         } catch (_: Exception) {
-            System.err.println("[FATAL] Excecao nao tratada: ${throwable.message}")
+            System.err.println("[FATAL] Excecao nao tratada: $msg")
             throwable.printStackTrace()
         }
     }
