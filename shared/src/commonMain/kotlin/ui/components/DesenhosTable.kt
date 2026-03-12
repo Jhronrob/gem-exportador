@@ -139,24 +139,25 @@ fun DesenhosTable(
         lista
     }
 
-    // Detecta quando o usuário está perto do final da lista (3 itens antes do fim)
+    // Dispara APENAS quando o item loader (último da lista) fica visível na tela.
+    // last >= total - 1 garante que o usuário realmente rolou até o loader,
+    // evitando disparo falso com janelas que mostram quase todos os itens.
     val isNearBottom by remember {
         derivedStateOf {
             if (!mostrarConcluidos) return@derivedStateOf false
+            val total = listState.layoutInfo.totalItemsCount
+            if (total == 0) return@derivedStateOf false
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
                 ?: return@derivedStateOf false
-            val total = listState.layoutInfo.totalItemsCount
-            total > 0 && last >= total - 3
+            last >= total - 1
         }
     }
 
-    // Carrega próxima página quando o usuário chega perto do fim
-    LaunchedEffect(isNearBottom, visibleCount) {
+    // Carrega próxima página quando o loader fica visível.
+    // Não usa visibleCount como chave para evitar re-disparo em cascata.
+    LaunchedEffect(isNearBottom) {
         if (!isNearBottom || visibleCount >= concluidos.size) return@LaunchedEffect
-        delay(80)
-        if (isNearBottom && visibleCount < concluidos.size) {
-            visibleCount = minOf(visibleCount + PAGE_SIZE, concluidos.size)
-        }
+        visibleCount = minOf(visibleCount + PAGE_SIZE, concluidos.size)
     }
 
     // Dialog unificado: atalhos de período + calendário customizado
@@ -946,11 +947,16 @@ private fun ArquivoCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier,
 }
 
 @Composable
+private val FORMAT_DISPLAY_ORDER = mapOf("pdf" to 1, "dwf" to 2, "dwg" to 10)
+
 private fun FormatosCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier, isCompact: Boolean = false) {
-    val formatos = desenho.formatosSolicitados
+    // Garante ordem de exibição PDF → DWF → DWG, independente da ordem salva no banco
+    val formatos = remember(desenho.formatosSolicitadosJson) {
+        desenho.formatosSolicitados.sortedBy { FORMAT_DISPLAY_ORDER[it.lowercase()] ?: 50 }
+    }
     val status = desenho.statusEnum
     val progresso = desenho.progresso
-    
+
     // Índice do primeiro formato ainda não gerado (o que está sendo processado)
     val primeiroPendenteIdx = remember(formatos, desenho.arquivosProcessados) {
         formatos.indexOfFirst { !desenho.formatoJaGerado(it) }
