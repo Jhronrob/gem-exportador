@@ -213,7 +213,7 @@ fun DesenhosTable(
             Divider(color = AppColors.Border, thickness = 1.dp)
             
             // Rows com overlay de refresh
-            Box(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.weight(1f)) {
                 if (desenhosExibidos.isEmpty() && !isRefreshing) {
                     EmptyState()
                 } else {
@@ -229,29 +229,10 @@ fun DesenhosTable(
                             )
                             Divider(color = AppColors.Border, thickness = 1.dp)
                         }
-                        // Indicador de carregamento quando há mais concluídos
+                        // Item sentinela no final — aciona o scroll infinito
                         if (mostrarConcluidos && concluidosPaginados.size < concluidos.size) {
                             item {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        CircularProgressIndicator(
-                                            color = AppColors.Primary,
-                                            strokeWidth = 2.dp,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "Carregando mais... (${concluidosPaginados.size}/${concluidos.size})",
-                                            color = AppColors.TextMuted,
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                }
+                                Spacer(modifier = Modifier.height(1.dp))
                             }
                         }
                     }
@@ -281,6 +262,30 @@ fun DesenhosTable(
                             )
                         }
                     }
+                }
+            }
+
+            // Barra de status fixa — sempre visível quando há mais concluídos para carregar
+            if (mostrarConcluidos && concluidosPaginados.size < concluidos.size) {
+                Divider(color = AppColors.Border, thickness = 1.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AppColors.SurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(
+                        color = AppColors.Primary,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Exibindo ${concluidosPaginados.size} de ${concluidos.size} concluídos — role para carregar mais",
+                        color = AppColors.TextMuted,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }
