@@ -4,21 +4,42 @@ import io.github.cdimascio.dotenv.dotenv
 import java.io.File
 
 /**
- * Configuração do desktop lida do .env (na raiz do projeto ou diretório de execução).
+ * Configuração do desktop lida do .env.
+ *
+ * O diretório de configuração persistente é escolhido para NÃO ser sobrescrito em
+ * atualizações in-app: em Windows usa %APPDATA%\gem-exportador (sobrevive a MSI/NSIS).
+ * Leitura: primeiro esse diretório, depois C:\gem-exportador (retrocompat), depois user.dir.
+ * Gravação: sempre no diretório persistente (appConfigDirectory).
  */
 object DesktopConfig {
     private val envFilename: String = System.getProperty("GemDesktopEnvFile") ?: ".env"
 
+    /**
+     * Diretório onde o .env é gravado e preferencialmente lido. Não fica dentro da pasta
+     * de instalação, então atualizações não apagam a configuração do usuário.
+     * Windows: %APPDATA%\gem-exportador (ex: C:\Users\...\AppData\Roaming\gem-exportador).
+     */
+    val appConfigDirectory: File by lazy {
+        val appData = System.getenv("APPDATA")
+        if (appData != null && appData.isNotBlank()) {
+            File(appData, "gem-exportador")
+        } else {
+            File("C:\\gem-exportador")
+        }
+    }
+
     private val envDir: String by lazy {
-        val candidates = listOf(
-            File("C:\\gem-exportador"),          // config editável pelo usuário (sem admin)
-            File(System.getProperty("user.dir")),
-            File(System.getProperty("user.dir")).parentFile,
-            File(System.getProperty("user.dir"), ".."),
-            File(System.getProperty("user.dir"), "../..")
+        val appConfigDir = appConfigDirectory
+        val candidates = listOfNotNull(
+            appConfigDir,                                    // 1) persistente (APPDATA)
+            File("C:\\gem-exportador"),                      // 2) retrocompat
+            System.getProperty("user.dir")?.let { File(it) },
+            System.getProperty("user.dir")?.let { File(it).parentFile },
+            System.getProperty("user.dir")?.let { File(it, "..") },
+            System.getProperty("user.dir")?.let { File(it, "../..") }
         )
         candidates.firstOrNull { it != null && File(it, envFilename).exists() }?.absolutePath
-            ?: "C:\\gem-exportador"
+            ?: appConfigDir.absolutePath  // default para leitura/gravação
     }
 
     private val dotenv by lazy {

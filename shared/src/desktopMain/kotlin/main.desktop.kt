@@ -78,7 +78,7 @@ actual fun loadCurrentSettings(): Map<String, String> = mapOf(
 
 actual fun saveSettings(values: Map<String, String>): Boolean {
     return try {
-        val configDir = File("C:\\gem-exportador")
+        val configDir = DesktopConfig.appConfigDirectory
         configDir.mkdirs()
         val envFile = File(configDir, ".env")
 
@@ -137,7 +137,7 @@ private fun buildMinimalEnv(overrides: Map<String, String>) {
         "",
         "SUPABASE_BACKUP_ENABLED=false"
     )
-    val configDir = File("C:\\gem-exportador")
+    val configDir = DesktopConfig.appConfigDirectory
     configDir.mkdirs()
     File(configDir, ".env").writeText(lines.joinToString("\r\n") + "\r\n")
 }

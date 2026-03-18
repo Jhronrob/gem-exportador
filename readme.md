@@ -116,7 +116,11 @@ Trigger `notify_desenho_changes()` dispara `pg_notify('desenho_changes', ...)` e
 ## Desktop App
 
 - **Kotlin Multiplatform** + **Compose Desktop**
-- Conecta ao servidor via **WebSocket** (`ws://localhost:8080/ws`) para atualizações em tempo real
+- Dois modos (definidos no .env ou nas Configurações):
+  - **Host**: app com servidor embutido (Inventor + banco na mesma máquina ou acessível). Processa a fila e exporta.
+  - **Viewer**: só visualiza; conecta ao endereço do App Host (IP:porta). Para estações que só acompanham a fila.
+- Configuração é salva em `%APPDATA%\gem-exportador` (Viewer e Host), assim **atualizações in-app não apagam IP, banco, etc.**
+- Conecta ao servidor via **WebSocket** para atualizações em tempo real
 - Tabela mostra últimos 7 dias + pendentes/processando (sempre visíveis)
 - Ações: Reenviar, Cancelar, Deletar
 - **F5** = Refresh com indicador visual

@@ -978,13 +978,18 @@ private fun FormatosCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier
                 val gerado = desenho.formatoJaGerado(formato)
                 val isFormatoAtivo = status == DesenhoStatus.PROCESSANDO && !gerado && idx == primeiroPendenteIdx
                 val isAguardando = status == DesenhoStatus.PROCESSANDO && !gerado && idx != primeiroPendenteIdx
+                // Se o backend já mandou progresso 100% mas o update com arquivosProcessados ainda não chegou,
+                // não mostrar azul: tratar como concluído (verde) para evitar badge azul com "100%"
+                val progressoJaChegouEm100 = isFormatoAtivo && progresso >= 100
+                val mostrarComoGerado = gerado || progressoJaChegouEm100
+                val mostrarComoEmProcessamento = isFormatoAtivo && progresso < 100
 
                 FormatoBadge(
                     formato = formato,
-                    gerado = gerado,
+                    gerado = mostrarComoGerado,
                     status = status,
-                    emProcessamento = isFormatoAtivo,
-                    mostrarSpinner = isFormatoAtivo,
+                    emProcessamento = mostrarComoEmProcessamento,
+                    mostrarSpinner = mostrarComoEmProcessamento,
                     isAguardando = isAguardando,
                     progresso = progresso,
                     isCompact = isCompact

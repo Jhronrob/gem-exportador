@@ -71,7 +71,7 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = if (isViewer) "Configurações do Viewer" else "Configurações do Servidor",
+                        text = if (isViewer) "Configurações — Viewer" else "Configurações — Host",
                         color = AppColors.TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
@@ -135,9 +135,9 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                     ) {
                         Text(
                             text = if (isViewer)
-                                "Viewer conecta ao App Servidor neste endereço. Altere o IP se o servidor mudou de máquina."
+                                "Viewer: só visualiza. Conecte ao endereço do App Host (IP:porta). Altere se o Host mudou de máquina. Config é guardada na pasta do usuário (sobrevive a atualizações)."
                             else
-                                "Servidor conecta ao banco de dados PostgreSQL neste endereço. O banco fica sempre na máquina KSI.",
+                                "Host: app com servidor embutido. Banco PostgreSQL (IP/porta) fica na máquina KSI. Config é guardada na pasta do usuário (sobrevive a atualizações).",
                             color = AppColors.TextSecondary,
                             fontSize = 11.sp,
                             lineHeight = 16.sp

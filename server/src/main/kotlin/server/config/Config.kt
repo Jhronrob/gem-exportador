@@ -63,17 +63,24 @@ object Config {
         return dotenv[key]?.ifBlank { null } ?: System.getenv(key)?.ifBlank { null } ?: default
     }
 
+    /**
+     * Diretório do .env. Inclui %APPDATA%\gem-exportador primeiro para que atualizações
+     * in-app não apaguem a config (a pasta de instalação é sobrescrita; APPDATA não).
+     */
     private fun findEnvDirectory(): String {
-        val candidates = listOf(
+        val appData = System.getenv("APPDATA")
+        val appDataDir = if (appData != null && appData.isNotBlank()) File(appData, "gem-exportador") else null
+        val candidates = listOfNotNull(
+            appDataDir,
             File("C:\\gem-exportador"),
-            File(System.getProperty("user.dir")),
-            File(System.getProperty("user.dir")).parentFile,
-            File(System.getProperty("user.dir"), ".."),
-            File(System.getProperty("user.dir"), "../..")
+            System.getProperty("user.dir")?.let { File(it) },
+            System.getProperty("user.dir")?.let { File(it).parentFile },
+            System.getProperty("user.dir")?.let { File(it, "..") },
+            System.getProperty("user.dir")?.let { File(it, "../..") }
         )
         for (dir in candidates) {
             if (dir != null && File(dir, envFilename).exists()) return dir.absolutePath
         }
-        return System.getProperty("user.dir")
+        return appDataDir?.absolutePath ?: System.getProperty("user.dir")
     }
 }
