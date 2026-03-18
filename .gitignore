@@ -22,6 +22,11 @@ shared/shared.podspec
 /data/
 /processados/
 
+# Artefatos de build do Gradle (cópias geradas dos fontes)
+server/bin/
+desktopApp/bin/
+shared/bin/
+
 # Builds locais
 *.msi
 *.exe
