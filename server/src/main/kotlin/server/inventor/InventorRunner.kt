@@ -3,6 +3,7 @@ package server.inventor
 import server.config.Config
 import server.util.AppLog
 import java.io.File
+import java.time.Instant
 
 /**
  * Executa o script processar-inventor.vbs para um único formato.
@@ -140,8 +141,43 @@ object InventorRunner {
     }
 
     /**
+     * Mock de processamento para modo dev (sem Autodesk/Windows).
+     * Simula a progressão real com delays configuráveis e cria um arquivo dummy de saída.
+     */
+    private fun runMock(
+        nomeBase: String,
+        formato: String,
+        onProgress: (Int) -> Unit
+    ): Result {
+        val delayMs = when (formato.lowercase()) {
+            "pdf" -> Config.devMockPdfMs
+            "dwf" -> Config.devMockDwfMs
+            "dwg" -> Config.devMockDwgMs
+            else -> 5000L
+        }
+        AppLog.info("[DEV-MOCK] Simulando exportação $formato para '$nomeBase' (~${delayMs / 1000}s)")
+
+        val steps = listOf(5, 10, 20, 35, 50, 65, 75, 83, 90, 97, 100)
+        val stepDelay = delayMs / steps.size
+
+        for (p in steps) {
+            Thread.sleep(stepDelay)
+            onProgress(p)
+        }
+
+        val outDir = File(Config.devOutputDir).apply { mkdirs() }
+        val outFile = File(outDir, "$nomeBase.$formato")
+        outFile.writeText(
+            "[DEV-MOCK] Arquivo gerado em ${Instant.now()} | formato=$formato | arquivo=$nomeBase.$formato"
+        )
+
+        AppLog.info("[DEV-MOCK] Concluído: ${outFile.absolutePath}")
+        return Result(true, outFile.absolutePath, null)
+    }
+
+    /**
      * Executa cscript processar-inventor.vbs para um formato.
-     * Bloqueia até o VBS terminar (o VBS por sua vez espera o macro Inventor gravar sucesso.txt ou erro.txt).
+     * Em modo dev (GEM_MODE=dev), usa runMock() sem precisar de Windows/Autodesk.
      *
      * @param onProgress callback chamado com progresso estimado (0-100) durante a execução
      */
@@ -153,6 +189,12 @@ object InventorRunner {
         onProgress: (Int) -> Unit = {}
     ): Result {
         onProgress(ProgressStages.VBS_STARTING)
+
+        // Modo dev: simula processamento sem precisar do Inventor/Windows
+        if (Config.isDevMode) {
+            val nomeBase = File(arquivoEntrada).nameWithoutExtension.ifBlank { "arquivo_dev" }
+            return runMock(nomeBase, formato, onProgress)
+        }
 
         if (!isWindows()) {
             AppLog.warn("InventorRunner: processamento só disponível no Windows")

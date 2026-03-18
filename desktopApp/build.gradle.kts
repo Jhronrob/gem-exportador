@@ -29,6 +29,12 @@ compose.desktop {
         jvmArgs("--add-opens", "java.desktop/sun.awt=ALL-UNNAMED")
         jvmArgs("--add-opens", "java.desktop/java.awt.peer=ALL-UNNAMED")
 
+        // Passa env file customizado via propriedade Gradle: -PgemDesktopEnvFile=.env.desktop-viewer
+        val gemDesktopEnvFile = project.findProperty("gemDesktopEnvFile")?.toString()
+        if (gemDesktopEnvFile != null) {
+            jvmArgs("-DGemDesktopEnvFile=$gemDesktopEnvFile")
+        }
+
         nativeDistributions {
             packageName = appName
             packageVersion = appVersion

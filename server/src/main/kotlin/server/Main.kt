@@ -45,6 +45,13 @@ fun startEmbeddedServer(wait: Boolean = false): Boolean {
         return false
     }
 
+    if (Config.isDevMode) {
+        AppLog.info("╔══════════════════════════════════════════════╗")
+        AppLog.info("║   GEM EXPORTADOR - MODO DESENVOLVIMENTO (dev) ║")
+        AppLog.info("║   Mock do Inventor ATIVO - sem Autodesk       ║")
+        AppLog.info("║   Banco: Supabase (nuvem)                     ║")
+        AppLog.info("╚══════════════════════════════════════════════╝")
+    }
     AppLog.info("Iniciando servidor em $host:$port")
     try {
         serverInstance = embeddedServer(CIO, port = port, host = host) {

@@ -3,15 +3,30 @@ package server.queue
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import model.ArquivoProcessado
 import model.DesenhoAutodesk
 import server.broadcast.Broadcast
+import server.config.Config
 import server.db.DesenhoDao
 import server.inventor.InventorRunner
 import server.util.AppLog
 import java.io.File
+
+@Serializable
+data class QueueItemDetalhe(val desenhoId: String, val formato: String, val posicaoFila: Int, val tentativa: Int)
+
+@Serializable
+data class QueueStatus(
+    val tamanho: Int,
+    val processando: Boolean,
+    val processoAtual: String?,
+    val processoAtualDetalhe: QueueItemDetalhe?,
+    val proximos: List<String>,
+    val proximosItens: List<QueueItemDetalhe>
+)
 
 /**
  * Fila de processamento (um item = desenhoId + formato).
@@ -30,6 +45,7 @@ class ProcessingQueue(
     private var processing = false
     private var currentItem: Item? = null
     private var processorJob: Job? = null
+    private var lastDesenhoId: String? = null
 
     /**
      * Progresso individual por formato: chave = "desenhoId:formato", valor = 0..100
@@ -139,15 +155,15 @@ class ProcessingQueue(
         return removed
     }
 
-    fun getStatus(): Map<String, Any?> = runBlocking {
+    fun getStatus(): QueueStatus = runBlocking {
         mutex.withLock {
-            mapOf<String, Any?>(
-                "tamanho" to queue.size,
-                "processando" to processing,
-                "processoAtual" to currentItem?.let { "${it.desenhoId} (${it.formato}) tentativa ${it.tentativa}" },
-                "processoAtualDetalhe" to currentItem?.let { mapOf("desenhoId" to it.desenhoId, "formato" to it.formato, "tentativa" to it.tentativa) },
-                "proximos" to queue.take(10).map { "pos${it.posicaoFila} ${it.desenhoId}:${it.formato} t${it.tentativa}" },
-                "proximosItens" to queue.take(50).map { mapOf("desenhoId" to it.desenhoId, "formato" to it.formato, "posicaoFila" to it.posicaoFila, "tentativa" to it.tentativa) }
+            QueueStatus(
+                tamanho = queue.size,
+                processando = processing,
+                processoAtual = currentItem?.let { "${it.desenhoId} (${it.formato}) tentativa ${it.tentativa}" },
+                processoAtualDetalhe = currentItem?.let { QueueItemDetalhe(it.desenhoId, it.formato, it.posicaoFila, it.tentativa) },
+                proximos = queue.take(10).map { "pos${it.posicaoFila} ${it.desenhoId}:${it.formato} t${it.tentativa}" },
+                proximosItens = queue.take(50).map { QueueItemDetalhe(it.desenhoId, it.formato, it.posicaoFila, it.tentativa) }
             )
         }
     }
@@ -158,11 +174,15 @@ class ProcessingQueue(
                 if (queue.isEmpty()) {
                     processing = false
                     currentItem = null
+                    lastDesenhoId = null
                     null
                 } else {
                     processing = true
-                    currentItem = queue.first()
-                    queue.removeAt(0)
+                    val sameDesenhoIdx = lastDesenhoId?.let { did ->
+                        queue.indexOfFirst { it.desenhoId == did }.takeIf { it >= 0 }
+                    }
+                    val nextIdx = sameDesenhoIdx ?: 0
+                    currentItem = queue.removeAt(nextIdx)
                     currentItem
                 }
             }
@@ -170,9 +190,21 @@ class ProcessingQueue(
                 delay(1000)
                 continue
             }
+            
+            if (lastDesenhoId != null && lastDesenhoId != item.desenhoId) {
+                val prevId = lastDesenhoId!!
+                val prevStillPending = mutex.withLock { queue.any { it.desenhoId == prevId } }
+                if (prevStillPending) {
+                    AppLog.info("[QUEUE] Trocando de desenho: $prevId ainda tem formatos pendentes -> voltando para 'pendente'")
+                    desenhoDao.update(prevId, status = "pendente")
+                    desenhoDao.getById(prevId)?.let { runBlocking { broadcast.sendUpdate(it) } }
+                }
+            }
+            lastDesenhoId = item.desenhoId
 
             var desenho = desenhoDao.getById(item.desenhoId)
             if (desenho == null || desenho.status == "cancelado") {
+                lastDesenhoId = null
                 currentItem = null
                 continue
             }
@@ -199,11 +231,13 @@ class ProcessingQueue(
                 desenho.pastaProcessamento,
                 desenho.nomeArquivo
             )
-            if (arquivoEntrada.isEmpty() || !File(arquivoEntrada).exists()) {
+            // Em modo dev, bypassa verificação de arquivo (IDW não existe localmente)
+            if (!Config.isDevMode && (arquivoEntrada.isEmpty() || !File(arquivoEntrada).exists())) {
                 val msg = "Arquivo original não encontrado: ${desenho.arquivoOriginal}"
                 AppLog.warn("$msg [desenho=${item.desenhoId}]")
                 desenhoDao.update(item.desenhoId, status = "erro", erro = msg)
                 broadcast.sendUpdate(desenhoDao.getById(item.desenhoId)!!)
+                lastDesenhoId = null
                 currentItem = null
                 continue
             }
@@ -218,9 +252,10 @@ class ProcessingQueue(
             }
 
             val reloaded = desenhoDao.getById(item.desenhoId)
-            if (reloaded == null) { currentItem = null; continue }
+            if (reloaded == null) { lastDesenhoId = null; currentItem = null; continue }
             desenho = reloaded
             if (desenho.status == "cancelado") {
+                lastDesenhoId = null
                 currentItem = null
                 continue
             }
@@ -308,6 +343,7 @@ class ProcessingQueue(
 
             // Limpa progresso do mapa quando desenho termina completamente
             if (todoProcessado) {
+                lastDesenhoId = null
                 formatosSolicitados.forEach { fmt ->
                     progressoPorFormato.remove("${item.desenhoId}:$fmt")
                 }

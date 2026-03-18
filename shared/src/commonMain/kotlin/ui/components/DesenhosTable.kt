@@ -958,10 +958,10 @@ private fun FormatosCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier
     val progresso = desenho.progresso
 
     // Índice do primeiro formato ainda não gerado (o que está sendo processado)
-    val primeiroPendenteIdx = remember(formatos, desenho.arquivosProcessados) {
+    val primeiroPendenteIdx = remember(formatos, desenho.arquivosProcessadosJson) {
         formatos.indexOfFirst { !desenho.formatoJaGerado(it) }
     }
-    
+
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(if (isCompact) 3.dp else 6.dp),
@@ -976,15 +976,16 @@ private fun FormatosCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier
         } else {
             formatos.forEachIndexed { idx, formato ->
                 val gerado = desenho.formatoJaGerado(formato)
-                val emProcessamento = status == DesenhoStatus.PROCESSANDO && !gerado
-                val mostrarSpinner = emProcessamento && idx == primeiroPendenteIdx
-                
+                val isFormatoAtivo = status == DesenhoStatus.PROCESSANDO && !gerado && idx == primeiroPendenteIdx
+                val isAguardando = status == DesenhoStatus.PROCESSANDO && !gerado && idx != primeiroPendenteIdx
+
                 FormatoBadge(
                     formato = formato,
                     gerado = gerado,
                     status = status,
-                    emProcessamento = emProcessamento,
-                    mostrarSpinner = mostrarSpinner,
+                    emProcessamento = isFormatoAtivo,
+                    mostrarSpinner = isFormatoAtivo,
+                    isAguardando = isAguardando,
                     progresso = progresso,
                     isCompact = isCompact
                 )
@@ -1000,6 +1001,7 @@ private fun FormatoBadge(
     status: DesenhoStatus,
     emProcessamento: Boolean = false,
     mostrarSpinner: Boolean = false,
+    isAguardando: Boolean = false,
     progresso: Int = 0,
     isCompact: Boolean = false
 ) {
@@ -1009,7 +1011,8 @@ private fun FormatoBadge(
         status == DesenhoStatus.ERRO -> Triple(AppColors.BadgeRedBg, AppColors.BadgeRed, AppColors.BadgeRed.copy(alpha = 0.5f))
         status == DesenhoStatus.CANCELADO -> Triple(AppColors.BadgeOrangeBg, AppColors.BadgeOrange, AppColors.BadgeOrange.copy(alpha = 0.5f))
         emProcessamento -> Triple(AppColors.BadgeBlueBg, AppColors.BadgeBlue, AppColors.BadgeBlue.copy(alpha = 0.5f))
-        status == DesenhoStatus.PENDENTE || status == DesenhoStatus.PROCESSANDO -> Triple(AppColors.BadgeYellowBg, AppColors.BadgeYellow, AppColors.BadgeYellow.copy(alpha = 0.5f))
+        isAguardando -> Triple(AppColors.BadgeYellowBg, AppColors.BadgeYellow, AppColors.BadgeYellow.copy(alpha = 0.5f))
+        status == DesenhoStatus.PENDENTE -> Triple(AppColors.BadgeYellowBg, AppColors.BadgeYellow, AppColors.BadgeYellow.copy(alpha = 0.5f))
         else -> Triple(AppColors.BadgeGrayBg, AppColors.BadgeGray, AppColors.BadgeGray.copy(alpha = 0.3f))
     }
     

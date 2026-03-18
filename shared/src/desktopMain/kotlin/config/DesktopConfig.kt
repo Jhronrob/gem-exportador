@@ -7,6 +7,8 @@ import java.io.File
  * Configuração do desktop lida do .env (na raiz do projeto ou diretório de execução).
  */
 object DesktopConfig {
+    private val envFilename: String = System.getProperty("GemDesktopEnvFile") ?: ".env"
+
     private val envDir: String by lazy {
         val candidates = listOf(
             File("C:\\gem-exportador"),          // config editável pelo usuário (sem admin)
@@ -15,13 +17,14 @@ object DesktopConfig {
             File(System.getProperty("user.dir"), ".."),
             File(System.getProperty("user.dir"), "../..")
         )
-        candidates.firstOrNull { it != null && File(it, ".env").exists() }?.absolutePath
+        candidates.firstOrNull { it != null && File(it, envFilename).exists() }?.absolutePath
             ?: "C:\\gem-exportador"
     }
 
     private val dotenv by lazy {
         dotenv {
             directory = envDir
+            filename = envFilename
             ignoreIfMissing = true
         }
     }

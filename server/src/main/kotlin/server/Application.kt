@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import org.postgresql.PGConnection
 import server.backup.SupabaseBackup
 import server.broadcast.Broadcast
+import server.config.Config
 import server.db.Database
 import server.db.DesenhoDao
 import server.queue.ProcessingQueue
@@ -56,7 +57,11 @@ fun Application.configureRouting() {
     db.init()
     val desenhoDao = DesenhoDao(db)
     
-    AppLog.info("Servidor gem-exportador iniciando em PRODUCAO com PostgreSQL")
+    if (Config.isDevMode) {
+        AppLog.info("Servidor gem-exportador iniciando em DESENVOLVIMENTO (mock Inventor ativo)")
+    } else {
+        AppLog.info("Servidor gem-exportador iniciando em PRODUCAO com PostgreSQL")
+    }
     
     val broadcast = Broadcast()
     val queue = ProcessingQueue(desenhoDao, broadcast)
@@ -97,6 +102,9 @@ fun Application.configureRouting() {
         apiExplorador()
         apiQueue(queue)
         apiStats(desenhoDao)
+        if (Config.isDevMode) {
+            apiDevSeed(db, desenhoDao, queue, broadcast)
+        }
     }
 }
 

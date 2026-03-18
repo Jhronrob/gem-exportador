@@ -10,6 +10,11 @@ kotlin {
 
 application {
     mainClass.set("server.MainKt")
+    // Suporte a -PgemEnvFile=.env.dev -> passado como -DGemEnvFile=.env.dev para a JVM
+    val gemEnvFile = project.findProperty("gemEnvFile")?.toString()
+    if (gemEnvFile != null) {
+        applicationDefaultJvmArgs = listOf("-DGemEnvFile=$gemEnvFile")
+    }
 }
 
 dependencies {
