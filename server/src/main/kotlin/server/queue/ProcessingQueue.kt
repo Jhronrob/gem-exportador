@@ -170,7 +170,9 @@ class ProcessingQueue(
 
     private suspend fun processLoop() {
         while (true) {
-            val item = mutex.withLock {
+            var itemVar: Item? = null
+            try {
+                itemVar = mutex.withLock {
                 if (queue.isEmpty()) {
                     processing = false
                     currentItem = null
@@ -186,10 +188,11 @@ class ProcessingQueue(
                     currentItem
                 }
             }
-            if (item == null) {
+            if (itemVar == null) {
                 delay(1000)
                 continue
             }
+            val item = itemVar!!
             
             if (lastDesenhoId != null && lastDesenhoId != item.desenhoId) {
                 val prevId = lastDesenhoId!!
@@ -327,7 +330,7 @@ class ProcessingQueue(
                 errosAnteriores.isEmpty() && concluidos >= totalFormatos -> "concluido"
                 errosAnteriores.isNotEmpty() && concluidos > 0 -> "concluido_com_erros"
                 errosAnteriores.isNotEmpty() -> "erro"
-                else -> "processando"
+                else -> if (concluidos > 0) "concluido_com_erros" else "erro" // Fallback: se terminou tudo e não é sucesso 100%, é erro
             }
             
             val progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados)
@@ -349,6 +352,12 @@ class ProcessingQueue(
                 }
             }
             currentItem = null
+        } catch (e: Exception) {
+            AppLog.error("[QUEUE] Erro crítico no loop de processamento do desenho ${itemVar?.desenhoId}: ${e.message}", e)
+            lastDesenhoId = null
+            currentItem = null
+            delay(2000)
+        }
         }
     }
 }

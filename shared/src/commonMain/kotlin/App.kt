@@ -150,7 +150,7 @@ fun App(repository: IDesenhoRepository) {
         DesenhoActions(
             onRetry = { desenho ->
                 logToFile("INFO", "Reenviar solicitado: ${desenho.nomeArquivo} (${desenho.id})")
-                repository.updateStatus(desenho.id, "processando", getCurrentDateTime())
+                repository.updateStatus(desenho.id, "pendente", getCurrentDateTime())
                 scope.launch(Dispatchers.Default) {
                     if (apiClient != null) {
                         val result = apiClient.retry(desenho.id)
