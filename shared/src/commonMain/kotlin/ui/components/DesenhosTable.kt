@@ -104,7 +104,15 @@ fun DesenhosTable(
 
         desenhosAtivos.forEach { d ->
             when (d.statusEnum) {
-                DesenhoStatus.PROCESSANDO, DesenhoStatus.PENDENTE -> fila.add(d)
+                DesenhoStatus.PROCESSANDO, DesenhoStatus.PENDENTE -> {
+                    // Reclassificação local: se todos os formatos solicitados já estão em
+                    // arquivosProcessados mas o status no banco ainda está desatualizado
+                    // (dado stale após crash/restart), tratar como concluído na UI.
+                    val solicitados = d.formatosSolicitados.ifEmpty { listOf("pdf") }
+                    val gerados = d.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
+                    val todosGerados = solicitados.all { it.lowercase() in gerados }
+                    if (todosGerados) ok.add(d) else fila.add(d)
+                }
                 DesenhoStatus.CONCLUIDO, DesenhoStatus.CONCLUIDO_COM_ERROS -> ok.add(d)
                 DesenhoStatus.ERRO, DesenhoStatus.CANCELADO -> problema.add(d)
             }
@@ -112,8 +120,8 @@ fun DesenhosTable(
 
         fila.sortWith(compareBy(
             { if (it.statusEnum == DesenhoStatus.PROCESSANDO) 0 else 1 },
-            { it.posicaoFila ?: Int.MAX_VALUE },
-            { it.horarioEnvio }
+            { it.horarioEnvio },
+            { it.posicaoFila ?: Int.MAX_VALUE }
         ))
 
         Triple(fila, ok, problema)
@@ -129,6 +137,13 @@ fun DesenhosTable(
         concluidos.take(visibleCount)
     }
     val temMais = mostrarConcluidos && concluidosPaginados.size < concluidos.size
+
+    // Mapa de posição visual para itens em fila: índice baseado em 1 dentro de emFila.
+    // O item em PROCESSANDO sempre fica no índice 0 → posição #1.
+    // Itens de outras categorias (concluidos, erros) não entram neste mapa.
+    val posicaoVisual: Map<String, Int> = remember(emFila) {
+        emFila.mapIndexed { idx, d -> d.id to (idx + 1) }.toMap()
+    }
 
     // Lista final: fila → erros/cancelados → concluídos paginados
     val desenhosExibidos = remember(emFila, concluidosPaginados, comProblema, mostrarConcluidos) {
@@ -226,7 +241,8 @@ fun DesenhosTable(
                             TableRowWithContextMenu(
                                 desenho = desenho,
                                 actions = actions,
-                                isCompact = isCompact
+                                isCompact = isCompact,
+                                posicaoVisual = posicaoVisual[desenho.id]
                             )
                             Divider(color = AppColors.Border, thickness = 1.dp)
                         }
@@ -577,7 +593,8 @@ private fun HeaderCell(text: String, modifier: Modifier = Modifier) {
 private fun TableRowWithContextMenu(
     desenho: DesenhoAutodesk,
     actions: DesenhoActions,
-    isCompact: Boolean = false
+    isCompact: Boolean = false,
+    posicaoVisual: Int? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
     
@@ -604,7 +621,7 @@ private fun TableRowWithContextMenu(
                 .padding(horizontal = if (isCompact) 8.dp else 16.dp, vertical = if (isCompact) 10.dp else 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ArquivoCell(desenho, modifier = Modifier.weight(1.0f), isCompact = isCompact)
+            ArquivoCell(desenho, modifier = Modifier.weight(1.0f), isCompact = isCompact, posicaoVisual = posicaoVisual)
             FormatosCell(desenho, modifier = Modifier.weight(if (isCompact) 1.0f else 1.5f), isCompact = isCompact)
             if (!isCompact) {
                 ComputadorCell(desenho.computador, modifier = Modifier.weight(0.8f))
@@ -798,9 +815,15 @@ private fun AcoesCell(
                 Divider(color = AppColors.Border, modifier = Modifier.padding(vertical = 4.dp))
                 
                 if (podeRetry) {
+                    val reenviarSubtitle = when (status) {
+                        DesenhoStatus.CONCLUIDO_COM_ERROS -> "Reprocessar formatos com falha"
+                        DesenhoStatus.CANCELADO -> "Reiniciar processamento"
+                        else -> "Tentar novamente"
+                    }
                     MenuItemStyled(
                         icon = Icons.Filled.Refresh,
                         label = "Reenviar",
+                        value = reenviarSubtitle,
                         isAction = true,
                         onClick = {
                             actions.onRetry(desenho)
@@ -813,6 +836,7 @@ private fun AcoesCell(
                     MenuItemStyled(
                         icon = Icons.Filled.Close,
                         label = "Cancelar",
+                        value = if (status == DesenhoStatus.PROCESSANDO) "Interromper e cancelar" else "Remover da fila",
                         isAction = true,
                         isDestructive = true,
                         onClick = {
@@ -916,19 +940,21 @@ private fun MenuItemStyled(
 }
 
 @Composable
-private fun ArquivoCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier, isCompact: Boolean = false) {
+private fun ArquivoCell(desenho: DesenhoAutodesk, modifier: Modifier = Modifier, isCompact: Boolean = false, posicaoVisual: Int? = null) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         val status = desenho.statusEnum
-        
-        // Posição na fila (se pendente ou processando)
-        if ((status == DesenhoStatus.PENDENTE || status == DesenhoStatus.PROCESSANDO) 
-            && desenho.posicaoFila != null) {
+
+        // Posição na fila derivada da ordem real da lista (não do valor no banco).
+        // O item em PROCESSANDO ativo sempre aparece como #1.
+        // Itens de outras categorias (concluidos, erros) não recebem posicaoVisual.
+        if ((status == DesenhoStatus.PENDENTE || status == DesenhoStatus.PROCESSANDO)
+            && posicaoVisual != null) {
             Text(
-                text = "#${desenho.posicaoFila}",
+                text = "#$posicaoVisual",
                 color = AppColors.TextMuted,
                 fontSize = if (isCompact) 10.sp else 12.sp,
                 fontFamily = FontFamily.Monospace

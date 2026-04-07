@@ -33,12 +33,14 @@ class DesenhoDao(private val database: Database) {
         }
     }
 
-    /** Pendentes + processando em ordem FIFO (primeiro recebido = primeiro na fila). Usado no startup da fila. */
+    /** Pendentes + processando em ordem FIFO verdadeira (horario_envio). Usado no startup da fila.
+     *  Ordena pelo horário de envio real, ignorando posicao_fila que pode estar stale/null.
+     *  O startup guard reatribui posicao_fila 1..N nessa ordem, sincronizando servidor e UI. */
     fun listPendentesEProcessandoOrderedByFila(limit: Int = 200): List<DesenhoAutodesk> {
         val sql = """
             SELECT * FROM desenho 
             WHERE status IN ('pendente', 'processando') 
-            ORDER BY (posicao_fila IS NULL), posicao_fila ASC NULLS LAST, horario_envio ASC 
+            ORDER BY horario_envio ASC, id ASC
             LIMIT ?
         """.trimIndent()
         return database.connection().use { conn ->
@@ -127,8 +129,12 @@ class DesenhoDao(private val database: Database) {
 
     fun update(id: String, status: String? = null, horarioAtualizacao: String? = null, progresso: Int? = null,
                arquivosProcessados: String? = null, erro: String? = null, canceladoEm: String? = null,
-               posicaoFila: Int? = null) {
+               posicaoFila: Int? = null, clearPosicaoFila: Boolean = false) {
         val now = horarioAtualizacao ?: java.time.Instant.now().toString()
+        // Posição só é válida se maior que 0; caso contrário, limpa (NULL)
+        val posicaoValida = posicaoFila?.takeIf { it > 0 }
+        // clearPosicaoFila=true: status terminal — remove posição da fila (NULL)
+        val deveEscreverPosicao = posicaoValida != null || clearPosicaoFila
         database.connection().use { conn ->
             conn.prepareStatement("""
                 UPDATE desenho SET
@@ -138,7 +144,7 @@ class DesenhoDao(private val database: Database) {
                     ${if (arquivosProcessados != null) ", arquivos_processados = ?" else ""}
                     ${if (erro != null) ", erro = ?" else ""}
                     ${if (canceladoEm != null) ", cancelado_em = ?::TIMESTAMPTZ" else ""}
-                    ${if (posicaoFila != null) ", posicao_fila = ?" else ""}
+                    ${if (deveEscreverPosicao) ", posicao_fila = ?" else ""}
                 WHERE id = ?
             """.trimIndent()).use { stmt ->
                 var i = 1
@@ -149,10 +155,37 @@ class DesenhoDao(private val database: Database) {
                 if (arquivosProcessados != null) stmt.setString(i++, arquivosProcessados)
                 if (erro != null) stmt.setString(i++, erro)
                 if (canceladoEm != null) stmt.setString(i++, canceladoEm)
-                if (posicaoFila != null) stmt.setInt(i++, posicaoFila)
+                if (deveEscreverPosicao) {
+                    // NULL quando clearPosicaoFila ou posicao inválida
+                    if (posicaoValida != null) stmt.setInt(i++, posicaoValida)
+                    else stmt.setNull(i++, java.sql.Types.INTEGER)
+                }
                 stmt.setString(i, id)
                 stmt.executeUpdate()
             }
+        }
+    }
+
+    /**
+     * Reindexação em lote via única query SQL (window function ROW_NUMBER).
+     * Muito mais eficiente que N UPDATEs individuais — essencial para startup com muitos itens.
+     * Atribui posicao_fila = 1..N ordenando por horario_envio ASC, id ASC (FIFO verdadeiro).
+     */
+    fun bulkReindexPosicaoFila() {
+        val sql = """
+            UPDATE desenho SET
+                posicao_fila = ranked.nova_pos,
+                horario_atualizacao = NOW()::TEXT,
+                atualizado_em = NOW()::TEXT
+            FROM (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY horario_envio ASC, id ASC) AS nova_pos
+                FROM desenho
+                WHERE status IN ('pendente', 'processando')
+            ) ranked
+            WHERE desenho.id = ranked.id
+        """.trimIndent()
+        database.connection().use { conn ->
+            conn.createStatement().use { stmt -> stmt.executeUpdate(sql) }
         }
     }
 
@@ -193,7 +226,9 @@ class DesenhoDao(private val database: Database) {
         stmt.setString(i++, d.computador)
         stmt.setString(i++, d.caminhoDestino)
         stmt.setString(i++, d.status)
-        stmt.setObject(i++, d.posicaoFila?.toLong())
+        // Sanitiza: posicao_fila <= 0 é inválida, persiste como NULL
+        val posicaoSanitizada = d.posicaoFila?.takeIf { it > 0 }
+        stmt.setObject(i++, posicaoSanitizada?.toLong())
         stmt.setString(i++, d.horarioEnvio)
         stmt.setString(i++, d.horarioAtualizacao)
         stmt.setString(i++, d.formatosSolicitadosJson)
@@ -215,7 +250,7 @@ class DesenhoDao(private val database: Database) {
         computador = getString("computador"),
         caminhoDestino = getString("caminho_destino"),
         status = getString("status"),
-        posicaoFila = getObject("posicao_fila")?.let { (it as Number).toInt() },
+        posicaoFila = getObject("posicao_fila")?.let { (it as Number).toInt() }?.takeIf { it > 0 },
         horarioEnvio = getString("horario_envio"),
         horarioAtualizacao = getString("horario_atualizacao"),
         formatosSolicitadosJson = getString("formatos_solicitados"),

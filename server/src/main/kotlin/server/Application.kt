@@ -68,24 +68,71 @@ fun Application.configureRouting() {
     
     // Adiciona desenhos pendentes e processando à fila em ordem FIFO (primeiro recebido = primeiro a processar)
     kotlinx.coroutines.runBlocking {
-        // STARTUP GUARD: Reseta desenhos presos em "processando" de sessões anteriores (crash/reinicio).
-        // Roda UMA vez aqui, nunca dentro do loop de processamento.
-        val presosProcessando = desenhoDao.list(status = "processando", limit = 200, offset = 0)
-        if (presosProcessando.isNotEmpty()) {
-            AppLog.warn("[STARTUP-GUARD] ${presosProcessando.size} desenho(s) presos em 'processando' encontrados — resetando para 'pendente'...")
-            for (preso in presosProcessando) {
-                AppLog.warn("[STARTUP-GUARD] Resetando ${preso.nomeArquivo} (${preso.id}) para 'pendente'")
-                desenhoDao.update(preso.id, status = "pendente")
+        try {
+            // STARTUP GUARD: Reseta desenhos presos em "processando" de sessões anteriores (crash/reinicio).
+            // Antes de re-enfileirar, verifica se todos os formatos já estão em arquivosProcessados —
+            // se sim, marca como "concluido" direto com posicao_fila=NULL (evita reprocessar itens já completos).
+            val presosProcessando = desenhoDao.list(status = "processando", limit = 200, offset = 0)
+            if (presosProcessando.isNotEmpty()) {
+                AppLog.warn("[STARTUP-GUARD] ${presosProcessando.size} desenho(s) presos em 'processando' encontrados — verificando...")
+                for (preso in presosProcessando) {
+                    try {
+                        val solicitados = preso.formatosSolicitados.ifEmpty { listOf("pdf") }
+                        val jaGerados = preso.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
+                        val faltando = solicitados.filter { it.lowercase() !in jaGerados }
+                        if (faltando.isEmpty()) {
+                            AppLog.info("[STARTUP-GUARD] ${preso.nomeArquivo} (${preso.id}) já tem todos os formatos gerados — marcando como 'concluido'")
+                            desenhoDao.update(preso.id, status = "concluido", progresso = 100, clearPosicaoFila = true)
+                        } else {
+                            AppLog.warn("[STARTUP-GUARD] ${preso.nomeArquivo} (${preso.id}) faltam formatos $faltando — resetando para 'pendente'")
+                            desenhoDao.update(preso.id, status = "pendente")
+                        }
+                    } catch (e: Exception) {
+                        AppLog.error("[STARTUP-GUARD] Erro ao processar item ${preso.nomeArquivo}: ${e.message}")
+                    }
+                }
             }
-        }
 
-        val retomar = desenhoDao.listPendentesEProcessandoOrderedByFila(limit = 200)
-        if (retomar.isNotEmpty()) {
-            AppLog.info("Adicionando ${retomar.size} desenho(s) a fila (ordem FIFO por horario_envio)...")
-            for (desenho in retomar) {
-                queue.add(desenho.id)
-                AppLog.info("  -> ${desenho.nomeArquivo} (${desenho.status}) adicionado a fila")
+            // Mesma checagem para itens que já estavam "pendente" mas têm todos os arquivos gerados
+            val itensPendentes = desenhoDao.list(status = "pendente", limit = 200, offset = 0)
+            val pendentesJaConcluidos = itensPendentes.filter { d ->
+                val solicitados = d.formatosSolicitados.ifEmpty { listOf("pdf") }
+                val jaGerados = d.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
+                solicitados.all { it.lowercase() in jaGerados }
             }
+            if (pendentesJaConcluidos.isNotEmpty()) {
+                AppLog.warn("[STARTUP-GUARD] ${pendentesJaConcluidos.size} item(ns) 'pendente' com todos os formatos já gerados — marcando como 'concluido'")
+                for (d in pendentesJaConcluidos) {
+                    try {
+                        AppLog.info("[STARTUP-GUARD] ${d.nomeArquivo} (${d.id}) marcado como 'concluido' sem re-enfileirar")
+                        desenhoDao.update(d.id, status = "concluido", progresso = 100, clearPosicaoFila = true)
+                    } catch (e: Exception) {
+                        AppLog.error("[STARTUP-GUARD] Erro ao marcar pendente como concluido ${d.nomeArquivo}: ${e.message}")
+                    }
+                }
+            }
+
+            // Reindexar posicao_fila: único SQL batch via window function ROW_NUMBER — muito mais rápido
+            // do que N UPDATEs individuais (evita timeout de startup com muitos itens em fila).
+            val retomar = desenhoDao.listPendentesEProcessandoOrderedByFila(limit = 200)
+            if (retomar.isNotEmpty()) {
+                AppLog.info("Reindexando posicoes 1..${retomar.size} para ${retomar.size} desenho(s) (batch SQL)...")
+                try {
+                    desenhoDao.bulkReindexPosicaoFila()
+                } catch (e: Exception) {
+                    AppLog.error("[STARTUP-GUARD] Erro na reindexação em lote: ${e.message}")
+                }
+                retomar.forEach { desenho ->
+                    queue.add(desenho.id)
+                }
+                AppLog.info("  -> ${retomar.size} desenho(s) adicionados à fila")
+            }
+        } catch (e: Exception) {
+            AppLog.error("[STARTUP-GUARD] Erro inesperado no startup guard — fila pode estar incompleta: ${e.message}", e)
+        } finally {
+            // Sempre libera o processLoop, mesmo em caso de erro.
+            // Sem isso, o processador ficaria travado esperando para sempre.
+            queue.markStartupComplete()
         }
     }
     

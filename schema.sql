@@ -81,12 +81,15 @@ RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
         PERFORM pg_notify('desenho_changes', json_build_object('op', 'INSERT', 'id', NEW.id)::text);
+        RETURN NEW;
     ELSIF TG_OP = 'UPDATE' THEN
         PERFORM pg_notify('desenho_changes', json_build_object('op', 'UPDATE', 'id', NEW.id)::text);
+        RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
         PERFORM pg_notify('desenho_changes', json_build_object('op', 'DELETE', 'id', OLD.id)::text);
+        RETURN OLD;
     END IF;
-    RETURN COALESCE(NEW, OLD);
+    RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 

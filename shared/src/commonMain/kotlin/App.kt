@@ -167,12 +167,15 @@ fun App(repository: IDesenhoRepository) {
             },
             onCancel = { desenho ->
                 logToFile("INFO", "Cancelar solicitado: ${desenho.nomeArquivo} (${desenho.id})")
+                val statusAnterior = desenho.status
                 repository.updateStatus(desenho.id, "cancelado", getCurrentDateTime())
                 scope.launch(Dispatchers.Default) {
                     if (apiClient != null) {
                         val result = apiClient.cancelar(desenho.id)
                         if (result.isFailure) {
                             logToFile("ERROR", "Falha ao cancelar ${desenho.nomeArquivo}: ${result.exceptionOrNull()?.message}")
+                            // Rollback: restaura status anterior para não deixar estado inconsistente
+                            repository.updateStatus(desenho.id, statusAnterior, getCurrentDateTime())
                         }
                     }
                 }
@@ -185,6 +188,8 @@ fun App(repository: IDesenhoRepository) {
                         val result = apiClient.delete(desenho.id)
                         if (result.isFailure) {
                             logToFile("ERROR", "Falha ao deletar ${desenho.nomeArquivo}: ${result.exceptionOrNull()?.message}")
+                            // Rollback: restaura o item localmente para não sumir sem ser deletado no servidor
+                            repository.upsert(desenho)
                         }
                     }
                 }

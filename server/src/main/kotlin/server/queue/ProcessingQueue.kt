@@ -53,9 +53,55 @@ class ProcessingQueue(
      */
     private val progressoPorFormato = mutableMapOf<String, Int>()
 
+    /** Liberado pelo startup guard após resetar todos os itens stale e reindexar posições.
+     *  O processLoop fica parado até este deferred ser completado. */
+    private val startupReady = CompletableDeferred<Unit>()
+
+
     init {
         processorJob = CoroutineScope(Dispatchers.Default).launch {
             processLoop()
+        }
+        CoroutineScope(Dispatchers.Default).launch {
+            watchdogLoop()
+        }
+    }
+
+    /**
+     * Watchdog periódico: a cada 2 minutos varre o DB em busca de itens "processando" ou "pendente"
+     * que já têm todos os formatos em arquivosProcessados — situação impossível no fluxo normal,
+     * mas que pode ocorrer por crash, exception, ou múltiplos usuários reenviando.
+     * Resolve os itens presos sem necessidade de restart do servidor.
+     */
+    private suspend fun watchdogLoop() {
+        delay(60_000L) // aguarda 1 min antes do primeiro scan (server ainda inicializando)
+        while (true) {
+            try {
+                val candidates = withContext(Dispatchers.IO) {
+                    desenhoDao.list(status = "processando", limit = 200, offset = 0) +
+                    desenhoDao.list(status = "pendente",    limit = 200, offset = 0)
+                }
+                for (d in candidates) {
+                    val solicitados = d.formatosSolicitados.ifEmpty { listOf("pdf") }
+                    val jaGerados = d.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
+                    if (solicitados.all { it.lowercase() in jaGerados }) {
+                        // Todos os formatos já estão registrados — verifica se não está ativo na fila
+                        val estaAtivo = mutex.withLock {
+                            currentItem?.desenhoId == d.id || queue.any { it.desenhoId == d.id }
+                        }
+                        if (!estaAtivo) {
+                            AppLog.warn("[WATCHDOG] Item preso detectado: ${d.nomeArquivo} (${d.id}) status='${d.status}' mas todos os formatos já gerados — concluindo e limpando posicao_fila")
+                            withContext(Dispatchers.IO) {
+                                desenhoDao.update(d.id, status = "concluido", progresso = 100, clearPosicaoFila = true)
+                                desenhoDao.getById(d.id)?.let { broadcast.sendUpdate(it) }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                AppLog.error("[WATCHDOG] Erro no scan: ${e.message}", e)
+            }
+            delay(2 * 60_000L) // intervalo de 2 minutos entre cada scan
         }
     }
 
@@ -108,10 +154,26 @@ class ProcessingQueue(
 
     suspend fun add(desenhoId: String, formatosOverride: List<String>? = null) {
         val desenho = desenhoDao.getById(desenhoId) ?: return
+
+        // Quando chamado sem override (ex: startup, realtime INSERT), filtra formatos já gerados
+        // para não re-enfileirar formatos que já constam em arquivosProcessados.
+        // O override explícito (retry) passa os formatos desejados diretamente e não é filtrado.
+        val jaGerados: Set<String> = if (formatosOverride == null) {
+            desenho.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
+        } else {
+            emptySet()
+        }
+
         // Ordena formatos por prioridade ANTES de adicionar (DWG sempre por último)
         val formatos = (formatosOverride?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }
             ?: desenho.formatosSolicitados.ifEmpty { listOf("pdf") })
+            .filter { it !in jaGerados }  // pula formatos já gerados (somente quando sem override)
             .sortedBy { formatPriority(it) }
+
+        if (formatos.isEmpty()) {
+            AppLog.info("[QUEUE] Ignorando add para ${desenho.nomeArquivo}: todos os formatos já gerados ${desenho.arquivosProcessados.map { it.tipo }}")
+            return
+        }
         val pos = desenhoDao.countPendentesEProcessando()
         AppLog.info("[QUEUE] Adicionando ${desenho.nomeArquivo}: formatos=${formatos} (ordenados por prioridade)")
         mutex.withLock {
@@ -139,6 +201,12 @@ class ProcessingQueue(
             { it.desenhoId },
             { formatPriority(it.formato) }
         ))
+    }
+
+    /** Chamado pelo startup guard após resetar todos os stale e reindexar posições.
+     *  Libera o processLoop para começar a processar. */
+    fun markStartupComplete() {
+        startupReady.complete(Unit)
     }
 
     fun remove(desenhoId: String): Boolean {
@@ -169,6 +237,11 @@ class ProcessingQueue(
     }
 
     private suspend fun processLoop() {
+        // Aguarda o startup guard terminar antes de processar qualquer item.
+        // Isso evita processar itens stale antes de o guard resetar estados inconsistentes do DB.
+        startupReady.await()
+        AppLog.info("[QUEUE] Startup concluído — iniciando processamento da fila")
+
         while (true) {
             var itemVar: Item? = null
             try {
@@ -267,16 +340,32 @@ class ProcessingQueue(
             
             // Rastrear formatos com erro
             val errosAnteriores = desenho.erro?.split(";")?.filter { it.isNotBlank() }?.toMutableList() ?: mutableListOf()
-            
-            if (result.success && result.arquivoGerado != null) {
-                AppLog.info("Formato ${item.formato} concluído para ${item.desenhoId}: ${result.arquivoGerado}")
+
+            // Reconciliação: se o resultado indica falha ou arquivo não registrado,
+            // verifica apenas se o arquivo deste item existe fisicamente na pasta de saída.
+            // A verificação é específica para o arquivo atual — não varre toda a pasta.
+            val arquivoReconciliado: String? = if (!result.success || result.arquivoGerado == null) {
+                val nomeBase = File(arquivoEntrada).nameWithoutExtension
+                val ext = item.formato.lowercase()
+                val esperado = File(pastaSaida.trim(), "$nomeBase.$ext")
+                if (esperado.exists()) {
+                    AppLog.info("[RECONCILE] Arquivo encontrado no destino apesar de falha reportada: ${esperado.absolutePath}")
+                    esperado.absolutePath
+                } else null
+            } else null
+
+            val arquivoGeradoFinal = result.arquivoGerado ?: arquivoReconciliado
+            val sucessoFinal = result.success || arquivoReconciliado != null
+
+            if (sucessoFinal && arquivoGeradoFinal != null) {
+                AppLog.info("Formato ${item.formato} concluído para ${item.desenhoId}: $arquivoGeradoFinal")
                 // Marca formato como 100%
                 progressoPorFormato["${item.desenhoId}:${item.formato}"] = 100
                 val novo = ArquivoProcessado(
-                    nome = File(result.arquivoGerado).name,
+                    nome = File(arquivoGeradoFinal).name,
                     tipo = item.formato,
-                    caminho = result.arquivoGerado,
-                    tamanho = File(result.arquivoGerado).length()
+                    caminho = arquivoGeradoFinal,
+                    tamanho = File(arquivoGeradoFinal).length()
                 )
                 existentes.removeAll { it.tipo.equals(item.formato, ignoreCase = true) }
                 existentes.add(novo)
@@ -335,12 +424,14 @@ class ProcessingQueue(
             
             val progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados)
             
+            val statusTerminal = novoStatus in setOf("concluido", "concluido_com_erros", "erro", "cancelado")
             desenhoDao.update(
                 item.desenhoId,
                 status = novoStatus,
                 progresso = progresso,
                 arquivosProcessados = json.encodeToString(existentes),
-                erro = if (errosAnteriores.isEmpty()) null else errosAnteriores.joinToString("; ")
+                erro = if (errosAnteriores.isEmpty()) null else errosAnteriores.joinToString("; "),
+                clearPosicaoFila = statusTerminal && todoProcessado
             )
             desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
 
@@ -354,6 +445,23 @@ class ProcessingQueue(
             currentItem = null
         } catch (e: Exception) {
             AppLog.error("[QUEUE] Erro crítico no loop de processamento do desenho ${itemVar?.desenhoId}: ${e.message}", e)
+            // Se o item estava sendo processado, garante que o status no DB não fique preso em "processando"
+            val itemFailed = itemVar
+            if (itemFailed != null) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val d = desenhoDao.getById(itemFailed.desenhoId)
+                        if (d?.status == "processando") {
+                            val msg = "Erro interno no processamento: ${e.message?.take(200) ?: "exceção desconhecida"}"
+                            AppLog.warn("[QUEUE] Marcando ${d.nomeArquivo} como 'erro' após exceção crítica")
+                            desenhoDao.update(itemFailed.desenhoId, status = "erro", erro = msg, clearPosicaoFila = true)
+                            desenhoDao.getById(itemFailed.desenhoId)?.let { broadcast.sendUpdate(it) }
+                        }
+                    }
+                } catch (inner: Exception) {
+                    AppLog.error("[QUEUE] Falha ao atualizar status após exceção: ${inner.message}", inner)
+                }
+            }
             lastDesenhoId = null
             currentItem = null
             delay(2000)

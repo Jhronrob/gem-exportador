@@ -71,8 +71,11 @@ fun main() {
                 util.logToFile("ERROR", "Erro ao iniciar servidor: ${e.message}")
             }
         }
-        // Aguarda o servidor iniciar (PostgreSQL já está rodando como serviço)
-        Thread.sleep(2000)
+        // Aguarda o servidor realmente responder (health check) antes de abrir a UI.
+        // Evita Connection refused prematuro enquanto startup guard ainda está rodando.
+        // 5 minutos — startup guard com muitos itens (batch SQL) ainda pode levar alguns segundos,
+        // mas com segurança para casos extremos (banco lento, muitos itens).
+        waitForServerReady(healthUrl = "http://localhost:8080/health", timeoutMs = 300_000)
     }
     
     // Inicia o app Compose
@@ -97,6 +100,33 @@ fun main() {
             MainView()
         }
     }
+}
+
+/**
+ * Aguarda o servidor embutido ficar pronto antes de abrir a UI.
+ * Tenta conectar ao health check a cada 500ms até receber HTTP 200 ou até o timeout.
+ * Isso evita Connection refused enquanto o startup guard ainda está processando.
+ */
+private fun waitForServerReady(healthUrl: String, timeoutMs: Long) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var attempt = 0
+    while (System.currentTimeMillis() < deadline) {
+        try {
+            val conn = java.net.URL(healthUrl).openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 500
+            conn.readTimeout = 500
+            conn.requestMethod = "GET"
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code == 200) {
+                if (attempt > 0) println("[GEM] Servidor pronto apos $attempt tentativa(s)")
+                return
+            }
+        } catch (_: Exception) { }
+        attempt++
+        Thread.sleep(500)
+    }
+    println("[GEM] Timeout aguardando servidor — abrindo UI assim mesmo")
 }
 
 /**

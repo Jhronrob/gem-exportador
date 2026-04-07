@@ -272,14 +272,36 @@ object InventorRunner {
         val estimatedExportMs = if (isDwg) 30_000L else 10_000L  // SaveCopyAs iniciado
         val estimatedWaitMs  = if (isDwg) 60_000L else 20_000L   // Aguardando arquivo
 
+        val nomeBase = File(arquivoEntrada).nameWithoutExtension
+        val pastaSaidaFile = File(pastaSaidaNorm.trim())
+
+        /**
+         * Busca o arquivo gerado na pasta de saída.
+         * Tenta o caminho exato primeiro; se não achar, faz busca ampla (case-insensitive, mesmo nomeBase).
+         */
+        fun buscarArquivoGerado(): String? {
+            val esperado = File(pastaSaidaFile, "$nomeBase.$formatoNorm")
+            if (esperado.exists()) return esperado.absolutePath
+            return pastaSaidaFile.listFiles()?.firstOrNull { f ->
+                f.extension.equals(formatoNorm, ignoreCase = true) &&
+                f.nameWithoutExtension.equals(nomeBase, ignoreCase = true)
+            }?.absolutePath
+        }
+
         while (process.isAlive) {
             val elapsed = System.currentTimeMillis() - startTime
 
-            // Timeout check
+            // Timeout check: antes de declarar timeout, bate na pasta para ver se o Autodesk gerou o arquivo
             if (elapsed >= timeoutMs) {
                 process.destroyForcibly()
                 stderrThread.join(2000)
                 stdoutThread.join(2000)
+                val arquivoEncontrado = buscarArquivoGerado()
+                if (arquivoEncontrado != null) {
+                    AppLog.info("[RECONCILE] Timeout mas arquivo encontrado na pasta de saída: $arquivoEncontrado")
+                    onProgress(ProgressStages.DONE)
+                    return Result(true, arquivoEncontrado, null)
+                }
                 val errInfo = stderrContent.ifBlank { stdoutContent }.trim().take(300)
                 AppLog.error("Timeout Inventor: processamento excedeu $TIMEOUT_MINUTES minutos. $errInfo")
                 return Result(false, null, "Timeout: processamento excedeu $TIMEOUT_MINUTES minutos. $errInfo")
@@ -318,15 +340,24 @@ object InventorRunner {
         val exitCode = process.exitValue()
         if (exitCode != 0) {
             val msg = (stderrContent.ifBlank { stdoutContent }).trim().take(500)
+            // VBS falhou, mas verifica se o Autodesk já gerou o arquivo antes da falha
+            val arquivoEncontrado = buscarArquivoGerado()
+            if (arquivoEncontrado != null) {
+                AppLog.info("[RECONCILE] VBS falhou (exitCode=$exitCode) mas arquivo encontrado na pasta de saída: $arquivoEncontrado — tratando como sucesso")
+                onProgress(ProgressStages.DONE)
+                return Result(true, arquivoEncontrado, null)
+            }
             AppLog.error("VBS retornou código $exitCode: $msg")
             return Result(false, null, "Script VBS retornou erro (código $exitCode): $msg")
         }
 
         onProgress(ProgressStages.FILE_FOUND)
 
-        val nomeBase = File(arquivoEntrada).nameWithoutExtension
-        val arquivoEsperado = File(pastaSaidaNorm.trim(), "$nomeBase.$formatoNorm")
-        val caminhoReal = if (arquivoEsperado.exists()) arquivoEsperado.absolutePath else null
+        // VBS saiu com sucesso — busca o arquivo na pasta de saída
+        val caminhoReal = buscarArquivoGerado()
+        if (caminhoReal == null) {
+            AppLog.warn("[RECONCILE] VBS saiu com código 0 mas arquivo não encontrado em $pastaSaidaFile ($nomeBase.$formatoNorm)")
+        }
 
         onProgress(ProgressStages.DONE)
         return Result(true, caminhoReal, null)

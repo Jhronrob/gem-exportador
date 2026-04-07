@@ -9,35 +9,30 @@ import java.sql.DriverManager
 
 actual class DatabaseDriverFactory {
     actual fun createDriver(): SqlDriver {
-        // Conecta ao PostgreSQL de produção KSI (192.168.1.152)
-        var connection: Connection? = null
-        var lastError: Exception? = null
-        
-        repeat(10) { attempt ->
-            try {
-                connection = DriverManager.getConnection(
-                    DesktopConfig.jdbcUrl,
-                    DesktopConfig.dbUser,
-                    DesktopConfig.dbPassword
-                )
-                return@repeat
-            } catch (e: Exception) {
-                lastError = e
-                println("[DB] Tentativa ${attempt + 1}/10 de conexao falhou, aguardando...")
-                Thread.sleep(2000)
-            }
-        }
-        
-        if (connection == null) {
-            throw RuntimeException("Nao foi possivel conectar ao PostgreSQL apos 10 tentativas: ${lastError?.message}", lastError)
-        }
-        
-        val conn = connection!!
+        val conn = conectar()
         val listeners = mutableMapOf<String, MutableSet<app.cash.sqldelight.Query.Listener>>()
+
+        var activeConn = conn
+
         val driver = object : JdbcDriver() {
-            override fun getConnection() = conn
+            override fun getConnection(): Connection {
+                // Reconecta automaticamente se a conexão estiver fechada ou inválida
+                if (activeConn.isClosed || !activeConn.isValid(2)) {
+                    println("[DB] Conexão inválida — reconectando...")
+                    activeConn = conectar()
+                }
+                // SQLDelight exige autoCommit=true na conexão retornada pelo driver.
+                // Se uma transação anterior falhou com exceção, pode ter deixado
+                // autoCommit=false. Garantimos o reset aqui para evitar o erro
+                // "Expected autoCommit to be true by default".
+                if (!activeConn.autoCommit) {
+                    try { activeConn.rollback() } catch (_: Exception) {}
+                    activeConn.autoCommit = true
+                }
+                return activeConn
+            }
             override fun closeConnection(connection: Connection) {
-                // Não fecha a conexão aqui, mantém aberta para reutilização
+                // Não fecha a conexão aqui; reutilizamos a mesma instância.
             }
             override fun addListener(vararg queryKeys: String, listener: app.cash.sqldelight.Query.Listener) {
                 queryKeys.forEach { key ->
@@ -55,15 +50,35 @@ actual class DatabaseDriverFactory {
                 }
             }
         }
-        
+
         // Verifica se a tabela existe, se não, cria o schema
         try {
-            conn.createStatement().executeQuery("SELECT 1 FROM desenho LIMIT 1")
+            activeConn.createStatement().executeQuery("SELECT 1 FROM desenho LIMIT 1")
         } catch (e: Exception) {
             GemDatabase.Schema.create(driver)
         }
-        
+
         return driver
+    }
+
+    private fun conectar(): Connection {
+        var lastError: Exception? = null
+        repeat(10) { attempt ->
+            try {
+                val c = DriverManager.getConnection(
+                    DesktopConfig.jdbcUrl,
+                    DesktopConfig.dbUser,
+                    DesktopConfig.dbPassword
+                )
+                c.autoCommit = true
+                return c
+            } catch (e: Exception) {
+                lastError = e
+                println("[DB] Tentativa ${attempt + 1}/10 de conexao falhou, aguardando...")
+                Thread.sleep(2000)
+            }
+        }
+        throw RuntimeException("Nao foi possivel conectar ao PostgreSQL apos 10 tentativas: ${lastError?.message}", lastError)
     }
 
     companion object {

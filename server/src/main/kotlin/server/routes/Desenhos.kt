@@ -345,17 +345,18 @@ val validFormats = setOf("pdf", "dwf", "dwg")
     post("/api/desenhos/{id}/cancelar") {
         val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest)
         val d = desenhoDao.getById(id) ?: return@post call.respond(HttpStatusCode.NotFound)
-        if (d.status == "concluido") {
-            call.respond(HttpStatusCode.BadRequest, ErrorResponse(erro = "Desenho já concluído"))
-            return@post
-        }
-        if (d.status == "cancelado") {
-            call.respond(HttpStatusCode.BadRequest, ErrorResponse(erro = "Desenho já cancelado"))
+        // Cancelar só é permitido para itens em fila ou em processamento ativo
+        val statusCancelaveis = setOf("pendente", "processando")
+        if (d.status !in statusCancelaveis) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Não é possível cancelar",
+                mensagem = "Cancelar só é permitido para status 'pendente' ou 'processando'. Status atual: '${d.status}'"
+            ))
             return@post
         }
         queue.remove(id)
         val now = java.time.Instant.now().toString()
-        desenhoDao.update(id, status = "cancelado", horarioAtualizacao = now, canceladoEm = now)
+        desenhoDao.update(id, status = "cancelado", horarioAtualizacao = now, canceladoEm = now, clearPosicaoFila = true)
         desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
         call.respond(CancelResponse(sucesso = true, mensagem = "Desenho cancelado", id = id, status = "cancelado"))
     }
@@ -371,12 +372,29 @@ val validFormats = setOf("pdf", "dwf", "dwg")
             return@post
         }
         AppLog.info("[RETRY] ${d.nomeArquivo} status=${d.status} solicitados=${d.formatosSolicitados} processados=${d.arquivosProcessados.map { it.tipo }}")
+        // Reenviar só é permitido para estados de erro ou cancelamento
+        val statusReenviavel = setOf("erro", "concluido_com_erros", "cancelado")
+        if (d.status !in statusReenviavel) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Reenviar não permitido",
+                mensagem = "Reenviar só é permitido para status 'erro', 'concluido_com_erros' ou 'cancelado'. Status atual: '${d.status}'"
+            ))
+            return@post
+        }
         val solicitados = d.formatosSolicitados.ifEmpty { listOf("pdf") }
         val jaGerados = d.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
-        val restantes = solicitados.map { it.lowercase() }.filter { !jaGerados.contains(it) }
-            .sortedBy { ProcessingQueue.formatPriority(it) } // DWG sempre por último
+        val restantesBrutos = solicitados.map { it.lowercase() }.filter { !jaGerados.contains(it) }
+            .sortedBy { ProcessingQueue.formatPriority(it) }
+        // Se não há formatos restantes mas o status é de erro (falso negativo / estado inconsistente),
+        // força reprocessamento completo de todos os formatos
+        val restantes = if (restantesBrutos.isEmpty() && d.status in setOf("erro", "concluido_com_erros")) {
+            AppLog.info("[RETRY] Todos os formatos parecem gerados mas status é '${d.status}' — forçando reprocessamento completo de: $solicitados")
+            solicitados.map { it.lowercase() }.sortedBy { ProcessingQueue.formatPriority(it) }
+        } else {
+            restantesBrutos
+        }
         if (restantes.isEmpty()) {
-            AppLog.warn("[RETRY] Nada a reprocessar para ${d.nomeArquivo}: solicitados=$solicitados jaGerados=$jaGerados")
+            AppLog.warn("[RETRY] Nada a reprocessar para ${d.nomeArquivo}: solicitados=$solicitados jaGerados=$jaGerados status=${d.status}")
             call.respond(HttpStatusCode.BadRequest, ErrorResponse(erro = "Nada a reprocessar: todos os formatos já gerados"))
             return@post
         }

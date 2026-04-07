@@ -86,6 +86,8 @@ class RealtimeClient(
     private var reconnectJob: Job? = null
     private var wsSession: WebSocketSession? = null
     private var shouldReconnect = true
+    private var reconnectAttempts = 0
+    private var lastReconnectLogMs = 0L
 
     // Batching: acumula operacoes e grava de uma vez apos um curto intervalo
     companion object {
@@ -116,13 +118,13 @@ class RealtimeClient(
         // --- Carga inicial via HTTP (sem limite de registros) ---
         try {
             val url = "$httpBaseUrl/api/desenhos/all"
-            logToFile("INFO", "Buscando dados iniciais via HTTP: $url")
+            if (reconnectAttempts <= 1) logToFile("INFO", "Buscando dados iniciais via HTTP: $url")
             val desenhos: List<DesenhoAutodesk> = client.get(url).body()
             repository.upsertAll(desenhos)
             logToFile("INFO", "Carga inicial HTTP: ${desenhos.size} desenhos carregados")
             _events.emit(RealtimeEvent.InitialData(desenhos))
         } catch (e: Exception) {
-            logToFile("WARN", "Carga inicial HTTP falhou (tentando via WS): ${e.message}")
+            if (reconnectAttempts <= 1) logToFile("WARN", "Carga inicial HTTP falhou (tentando via WS): ${e.message}")
         }
 
         // --- WebSocket apenas para atualizações em tempo real ---
@@ -130,6 +132,8 @@ class RealtimeClient(
             client.webSocket(serverUrl) {
                 wsSession = this
                 _connectionState.value = ConnectionState.CONNECTED
+                reconnectAttempts = 0
+                lastReconnectLogMs = 0L
                 logToFile("INFO", "WebSocket conectado a $serverUrl")
                 _events.emit(RealtimeEvent.Connected)
 
@@ -153,7 +157,15 @@ class RealtimeClient(
         } catch (e: Exception) {
             _connectionState.value = ConnectionState.DISCONNECTED
             if (shouldReconnect) {
-                logToFile("ERROR", "WebSocket falhou: ${e.message}")
+                reconnectAttempts++
+                val now = System.currentTimeMillis()
+                // Loga ERROR apenas na primeira falha; depois, só a cada 30s para não spammar
+                if (reconnectAttempts == 1) {
+                    logToFile("ERROR", "WebSocket falhou: ${e.message}")
+                } else if (now - lastReconnectLogMs >= 30_000) {
+                    logToFile("WARN", "WebSocket ainda desconectado (tentativa $reconnectAttempts): ${e.message}")
+                    lastReconnectLogMs = now
+                }
                 _events.emit(RealtimeEvent.Error("Erro de conexao: ${e.message}"))
                 scheduleReconnect()
             }
@@ -299,13 +311,20 @@ class RealtimeClient(
     }
 
     /**
-     * Agenda reconexao apos falha
+     * Agenda reconexao apos falha com backoff exponencial.
+     * 1ª tentativa: 5s, 2ª: 10s, 3ª: 20s, depois fixo em 30s.
      */
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
         reconnectJob?.cancel()
+        val delayMs = when (reconnectAttempts) {
+            1 -> 5_000L
+            2 -> 10_000L
+            3 -> 20_000L
+            else -> 30_000L
+        }
         reconnectJob = CoroutineScope(Dispatchers.Default).launch {
-            delay(5000)
+            delay(delayMs)
             if (shouldReconnect) {
                 _connectionState.value = ConnectionState.RECONNECTING
                 connect()
