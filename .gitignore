@@ -22,7 +22,7 @@ shared/shared.podspec
 /data/
 /processados/
 
-# Artefatos de build do Gradle (cópias geradas dos fontes)
+# Artefatos de build do Gradle (copias geradas dos fontes)
 server/bin/
 desktopApp/bin/
 shared/bin/
@@ -44,14 +44,26 @@ desktopApp/pgsql-bundle/
 *.log
 logs/
 
-# Arquivos temporários
+# Arquivos temporarios
 *.tmp
 *.temp
 
-# Pasta de dados locais / migração
+# Pasta de dados locais / migracao
 gem-exportador/
 desenho_export.csv
 migrate_sqlite.java
 migrate_sqlite.class
 migrate-data.ps1
 pg16-binaries.zip
+
+# Ruby / Bundler (se o projeto usar gems Ruby)
+vendor/bundle/
+.bundle/
+
+# Arquivos de chave e certificado
+*.pem
+*.key
+*.p12
+
+# Cobertura de testes
+coverage/
