@@ -1,5 +1,28 @@
 package server.db
 
+// ============================================================
+// CORREÇÃO 2 de 3 — Campo `erro` nunca era limpo
+// Arquivo: server/src/main/kotlin/server/db/DesenhoDao.kt
+//
+// PROBLEMA: update(erro = null) não incluía o campo no SQL,
+//   então o valor antigo permanecia no banco mesmo após sucesso.
+//   Resultado: desenho aparecia como "concluido" mas ainda
+//   exibia a mensagem de erro do processamento anterior.
+//
+// SOLUÇÃO: novo parâmetro clearErro: Boolean = false.
+//   - clearErro = false (default) → comportamento anterior preservado
+//   - clearErro = true            → grava NULL explícito no banco
+//
+// MUDANÇA NA ASSINATURA (linha da fun update):
+//   ANTES: fun update(id, status, horarioAtualizacao, progresso,
+//                     arquivosProcessados, erro, canceladoEm,
+//                     posicaoFila, clearPosicaoFila)
+//   DEPOIS: igual + clearErro: Boolean = false  (antes de clearPosicaoFila)
+//
+// Todos os callers existentes que não passam clearErro
+// continuam funcionando sem nenhuma alteração (default = false).
+// ============================================================
+
 import model.DesenhoAutodesk
 import java.sql.ResultSet
 
@@ -33,9 +56,7 @@ class DesenhoDao(private val database: Database) {
         }
     }
 
-    /** Pendentes + processando em ordem FIFO verdadeira (horario_envio). Usado no startup da fila.
-     *  Ordena pelo horário de envio real, ignorando posicao_fila que pode estar stale/null.
-     *  O startup guard reatribui posicao_fila 1..N nessa ordem, sincronizando servidor e UI. */
+    /** Pendentes + processando em ordem FIFO verdadeira (horario_envio). Usado no startup da fila. */
     fun listPendentesEProcessandoOrderedByFila(limit: Int = 200): List<DesenhoAutodesk> {
         val sql = """
             SELECT * FROM desenho 
@@ -90,10 +111,9 @@ class DesenhoDao(private val database: Database) {
      * Retorna o ID do desenho inserido (gerado ou original).
      */
     fun insert(d: DesenhoAutodesk): String {
-        // Gera UUID se ID for null ou vazio
         val finalId = if (d.id.isNullOrBlank()) java.util.UUID.randomUUID().toString() else d.id
         val desenhoComId = d.copy(id = finalId)
-        
+
         database.connection().use { conn ->
             conn.prepareStatement("""
                 INSERT INTO desenho (id, nome_arquivo, computador, caminho_destino, status, posicao_fila,
@@ -127,14 +147,37 @@ class DesenhoDao(private val database: Database) {
         return finalId
     }
 
-    fun update(id: String, status: String? = null, horarioAtualizacao: String? = null, progresso: Int? = null,
-               arquivosProcessados: String? = null, erro: String? = null, canceladoEm: String? = null,
-               posicaoFila: Int? = null, clearPosicaoFila: Boolean = false) {
+    // ============================================================
+    // CORREÇÃO 2: parâmetro clearErro adicionado
+    //
+    //   clearErro = false (default) → não toca no campo erro
+    //   clearErro = true            → grava NULL no campo erro
+    //
+    // Lógica: val deveEscreverErro = erro != null || clearErro
+    //   - erro != null  → atualiza com o valor fornecido
+    //   - clearErro     → grava NULL (limpa erro anterior)
+    //   - ambos false   → campo não aparece no SQL (sem alteração)
+    // ============================================================
+    fun update(
+        id: String,
+        status: String? = null,
+        horarioAtualizacao: String? = null,
+        progresso: Int? = null,
+        arquivosProcessados: String? = null,
+        erro: String? = null,
+        clearErro: Boolean = false,          // ← NOVO PARÂMETRO
+        canceladoEm: String? = null,
+        posicaoFila: Int? = null,
+        clearPosicaoFila: Boolean = false
+    ) {
         val now = horarioAtualizacao ?: java.time.Instant.now().toString()
-        // Posição só é válida se maior que 0; caso contrário, limpa (NULL)
         val posicaoValida = posicaoFila?.takeIf { it > 0 }
-        // clearPosicaoFila=true: status terminal — remove posição da fila (NULL)
         val deveEscreverPosicao = posicaoValida != null || clearPosicaoFila
+
+        // CORREÇÃO: inclui o campo erro no SQL quando clearErro=true (grava NULL)
+        // ou quando erro != null (grava o valor). Antes, erro=null nunca entrava no SQL.
+        val deveEscreverErro = erro != null || clearErro
+
         database.connection().use { conn ->
             conn.prepareStatement("""
                 UPDATE desenho SET
@@ -142,7 +185,7 @@ class DesenhoDao(private val database: Database) {
                     ${if (status != null) ", status = ?" else ""}
                     ${if (progresso != null) ", progresso = ?" else ""}
                     ${if (arquivosProcessados != null) ", arquivos_processados = ?" else ""}
-                    ${if (erro != null) ", erro = ?" else ""}
+                    ${if (deveEscreverErro) ", erro = ?" else ""}
                     ${if (canceladoEm != null) ", cancelado_em = ?::TIMESTAMPTZ" else ""}
                     ${if (deveEscreverPosicao) ", posicao_fila = ?" else ""}
                 WHERE id = ?
@@ -153,10 +196,13 @@ class DesenhoDao(private val database: Database) {
                 if (status != null) stmt.setString(i++, status)
                 if (progresso != null) stmt.setInt(i++, progresso)
                 if (arquivosProcessados != null) stmt.setString(i++, arquivosProcessados)
-                if (erro != null) stmt.setString(i++, erro)
+                if (deveEscreverErro) {
+                    // erro != null → grava o valor; clearErro → grava NULL
+                    if (erro != null) stmt.setString(i++, erro)
+                    else stmt.setNull(i++, java.sql.Types.VARCHAR)
+                }
                 if (canceladoEm != null) stmt.setString(i++, canceladoEm)
                 if (deveEscreverPosicao) {
-                    // NULL quando clearPosicaoFila ou posicao inválida
                     if (posicaoValida != null) stmt.setInt(i++, posicaoValida)
                     else stmt.setNull(i++, java.sql.Types.INTEGER)
                 }
@@ -169,7 +215,6 @@ class DesenhoDao(private val database: Database) {
     /**
      * Reindexação em lote via única query SQL (window function ROW_NUMBER).
      * Muito mais eficiente que N UPDATEs individuais — essencial para startup com muitos itens.
-     * Atribui posicao_fila = 1..N ordenando por horario_envio ASC, id ASC (FIFO verdadeiro).
      */
     fun bulkReindexPosicaoFila() {
         val sql = """
@@ -226,7 +271,6 @@ class DesenhoDao(private val database: Database) {
         stmt.setString(i++, d.computador)
         stmt.setString(i++, d.caminhoDestino)
         stmt.setString(i++, d.status)
-        // Sanitiza: posicao_fila <= 0 é inválida, persiste como NULL
         val posicaoSanitizada = d.posicaoFila?.takeIf { it > 0 }
         stmt.setObject(i++, posicaoSanitizada?.toLong())
         stmt.setString(i++, d.horarioEnvio)
