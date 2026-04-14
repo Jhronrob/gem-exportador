@@ -1,3 +1,11 @@
+// ============================================================
+// CORREÇÃO 1 de 3 — Connection Pool (HikariCP)
+// Arquivo: server/build.gradle.kts
+//
+// MUDANÇA: adicionar a linha do HikariCP nas dependencies
+// Linha nova marcada com: // ← ADICIONADO
+// ============================================================
+
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
@@ -10,7 +18,6 @@ kotlin {
 
 application {
     mainClass.set("server.MainKt")
-    // Suporte a -PgemEnvFile=.env.dev -> passado como -DGemEnvFile=.env.dev para a JVM
     val gemEnvFile = project.findProperty("gemEnvFile")?.toString()
     if (gemEnvFile != null) {
         applicationDefaultJvmArgs = listOf("-DGemEnvFile=$gemEnvFile")
@@ -29,4 +36,5 @@ dependencies {
     implementation("org.postgresql:postgresql:42.7.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:${rootProject.extra["coroutines.version"]}")
     implementation("io.github.cdimascio:dotenv-kotlin:6.4.1")
+    implementation("com.zaxxer:HikariCP:5.1.0") // ← ADICIONADO: connection pool
 }

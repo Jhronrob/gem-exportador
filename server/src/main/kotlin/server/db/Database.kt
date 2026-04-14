@@ -1,26 +1,76 @@
 package server.db
 
+// ============================================================
+// CORREÇÃO 1 de 3 — Connection Pool (HikariCP)
+// Arquivo: server/src/main/kotlin/server/db/Database.kt
+//
+// PROBLEMA: cada query abria e fechava uma conexão JDBC nova.
+//   Com watchdog + fila + backup + requests HTTP simultâneos,
+//   o servidor podia atingir o limite de conexões do PostgreSQL
+//   e derrubar tudo com: "FATAL: sorry, too many clients already"
+//
+// SOLUÇÃO: HikariCP mantém um pool de conexões reutilizadas.
+//   A interface fun connection(): Connection não muda —
+//   todos os DAOs continuam funcionando sem nenhuma alteração.
+//
+// MUDANÇAS:
+//   - imports: removido DriverManager, adicionado HikariCP
+//   - adicionado dataSource como propriedade da classe
+//   - fun connection() agora busca do pool em vez de criar nova
+//   - fun close() adicionado para shutdown limpo
+// ============================================================
+
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import server.config.Config
 import server.util.AppLog
 import java.sql.Connection
-import java.sql.DriverManager
 
 /**
- * PostgreSQL JDBC para o servidor.
+ * PostgreSQL JDBC para o servidor — com connection pool (HikariCP).
  * Conecta ao PostgreSQL de produção da KSI (192.168.1.152).
  * Configuração via variáveis de ambiente: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
  */
 class Database {
-    private val jdbcUrl = Config.jdbcUrl
-    private val user = Config.dbUser
-    private val password = Config.dbPassword
 
-    fun connection(): Connection = DriverManager.getConnection(jdbcUrl, user, password)
+    // Pool de conexões: reutiliza até 10 conexões abertas.
+    // Cada chamada a connection() pega uma do pool (< 1ms).
+    // O .use { } nos DAOs devolve a conexão ao pool automaticamente.
+    private val dataSource: HikariDataSource by lazy {
+        HikariDataSource(HikariConfig().apply {
+            jdbcUrl         = Config.jdbcUrl
+            username        = Config.dbUser
+            password        = Config.dbPassword
+            maximumPoolSize = 10   // máximo de conexões simultâneas
+            minimumIdle     = 2    // conexões mantidas abertas em repouso
+            connectionTimeout   = 30_000  // ms para conseguir uma conexão do pool
+            idleTimeout         = 600_000 // ms antes de fechar conexão ociosa
+            maxLifetime         = 1_800_000 // ms máximo de vida de uma conexão (30min)
+            poolName        = "gem-pool"
+            isAutoCommit    = true
+        })
+    }
+
+    // Interface idêntica ao código anterior — nenhum DAO precisa mudar.
+    fun connection(): Connection = dataSource.connection
+
+    // Fecha o pool no shutdown do servidor.
+    fun close() {
+        try {
+            if (!dataSource.isClosed) {
+                AppLog.info("[DB] Fechando connection pool...")
+                dataSource.close()
+            }
+        } catch (e: Exception) {
+            AppLog.error("[DB] Erro ao fechar pool: ${e.message}")
+        }
+    }
 
     fun init() {
         AppLog.info("Conectando ao PostgreSQL: ${Config.dbHost}:${Config.dbPort}/${Config.dbName}")
-        
-        // Retry de conexão (PostgreSQL pode estar iniciando)
+
+        // Retry de conexão (PostgreSQL pode estar iniciando).
+        // Com HikariCP, a primeira chamada a connection() já valida a conectividade.
         var lastError: Exception? = null
         repeat(10) { attempt ->
             try {
@@ -51,37 +101,49 @@ class Database {
                             pasta_processamento TEXT
                         )
                     """.trimIndent())
-                    
-                    // Cria índices
+
+                    // Índices
                     conn.createStatement().executeUpdate("CREATE INDEX IF NOT EXISTS idx_desenho_status ON desenho(status)")
                     conn.createStatement().executeUpdate("CREATE INDEX IF NOT EXISTS idx_desenho_computador ON desenho(computador)")
                     conn.createStatement().executeUpdate("CREATE INDEX IF NOT EXISTS idx_desenho_horario_envio ON desenho(horario_envio)")
-                    
+
                     // Trigger para notificações em tempo real (LISTEN/NOTIFY)
-                    conn.createStatement().executeUpdate("""
-                        CREATE OR REPLACE FUNCTION notify_desenho_changes()
-                        RETURNS TRIGGER AS $$
-                        BEGIN
-                            IF TG_OP = 'INSERT' THEN
-                                PERFORM pg_notify('desenho_changes', json_build_object('op', 'INSERT', 'id', NEW.id)::text);
-                            ELSIF TG_OP = 'UPDATE' THEN
-                                PERFORM pg_notify('desenho_changes', json_build_object('op', 'UPDATE', 'id', NEW.id)::text);
-                            ELSIF TG_OP = 'DELETE' THEN
-                                PERFORM pg_notify('desenho_changes', json_build_object('op', 'DELETE', 'id', OLD.id)::text);
-                            END IF;
-                            RETURN COALESCE(NEW, OLD);
-                        END;
-                        $$ LANGUAGE plpgsql
-                    """.trimIndent())
-                    
-                    conn.createStatement().executeUpdate("DROP TRIGGER IF EXISTS desenho_changes_trigger ON desenho")
-                    conn.createStatement().executeUpdate("""
-                        CREATE TRIGGER desenho_changes_trigger
-                        AFTER INSERT OR UPDATE OR DELETE ON desenho
-                        FOR EACH ROW EXECUTE PROCEDURE notify_desenho_changes()
-                    """.trimIndent())
-                    
-                    AppLog.info("PostgreSQL inicializado com sucesso!")
+                    // Operações de trigger agora dentro de transação para evitar estado
+                    // inconsistente caso o servidor seja interrompido entre DROP e CREATE.
+                    conn.autoCommit = false
+                    try {
+                        conn.createStatement().executeUpdate("""
+                            CREATE OR REPLACE FUNCTION notify_desenho_changes()
+                            RETURNS TRIGGER AS ${'$'}${'$'}
+                            BEGIN
+                                IF TG_OP = 'INSERT' THEN
+                                    PERFORM pg_notify('desenho_changes', json_build_object('op', 'INSERT', 'id', NEW.id)::text);
+                                ELSIF TG_OP = 'UPDATE' THEN
+                                    PERFORM pg_notify('desenho_changes', json_build_object('op', 'UPDATE', 'id', NEW.id)::text);
+                                ELSIF TG_OP = 'DELETE' THEN
+                                    PERFORM pg_notify('desenho_changes', json_build_object('op', 'DELETE', 'id', OLD.id)::text);
+                                END IF;
+                                RETURN COALESCE(NEW, OLD);
+                            END;
+                            ${'$'}${'$'} LANGUAGE plpgsql
+                        """.trimIndent())
+
+                        conn.createStatement().executeUpdate("DROP TRIGGER IF EXISTS desenho_changes_trigger ON desenho")
+                        conn.createStatement().executeUpdate("""
+                            CREATE TRIGGER desenho_changes_trigger
+                            AFTER INSERT OR UPDATE OR DELETE ON desenho
+                            FOR EACH ROW EXECUTE PROCEDURE notify_desenho_changes()
+                        """.trimIndent())
+
+                        conn.commit()
+                    } catch (e: Exception) {
+                        conn.rollback()
+                        throw e
+                    } finally {
+                        conn.autoCommit = true
+                    }
+
+                    AppLog.info("PostgreSQL inicializado com sucesso! Pool: ${Config.dbHost}:${Config.dbPort}/${Config.dbName}")
                     return
                 }
             } catch (e: Exception) {
@@ -90,7 +152,7 @@ class Database {
                 Thread.sleep(2000)
             }
         }
-        
+
         throw RuntimeException("Não foi possível conectar ao PostgreSQL após 10 tentativas: ${lastError?.message}", lastError)
     }
 }
