@@ -1,5 +1,26 @@
 package server.queue
 
+// ============================================================
+// CORREÇÕES 3a e 3b — ProcessingQueue.kt
+//
+// CORREÇÃO 3a: mutableMapOf → ConcurrentHashMap (linha 54)
+//   PROBLEMA: progressoPorFormato era um LinkedHashMap comum,
+//     não thread-safe. Acessado simultaneamente pelo processLoop,
+//     pelo callback de progresso do Inventor (thread IO) e por
+//     remove() (thread de request Ktor). Risco de
+//     ConcurrentModificationException ou dados corrompidos.
+//   SOLUÇÃO: java.util.concurrent.ConcurrentHashMap
+//     Mesma interface MutableMap — zero mudanças nos callers.
+//
+// CORREÇÃO 3b: passar clearErro = true quando sem erros (linha ~428)
+//   PROBLEMA: desenhoDao.update(erro = null) não incluía o campo
+//     no SQL → valor antigo permanecia no banco após retry com sucesso.
+//   SOLUÇÃO: passar clearErro = errosAnteriores.isEmpty()
+//     Quando não há erros, instrui o DAO a gravar NULL explícito.
+//
+// Linhas alteradas marcadas com: // ← CORRIGIDO
+// ============================================================
+
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -14,6 +35,7 @@ import server.db.DesenhoDao
 import server.inventor.InventorRunner
 import server.util.AppLog
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap  // ← CORRIGIDO 3a: import adicionado
 
 @Serializable
 data class QueueItemDetalhe(val desenhoId: String, val formato: String, val posicaoFila: Int, val tentativa: Int)
@@ -50,13 +72,14 @@ class ProcessingQueue(
     /**
      * Progresso individual por formato: chave = "desenhoId:formato", valor = 0..100
      * Formatos concluídos = 100, na fila = 0, em processamento = valor intermediário
+     *
+     * CORREÇÃO 3a: ConcurrentHashMap em vez de mutableMapOf (LinkedHashMap).
+     * Thread-safe para leituras e escritas simultâneas de múltiplos contextos.
      */
-    private val progressoPorFormato = mutableMapOf<String, Int>()
+    private val progressoPorFormato = ConcurrentHashMap<String, Int>()  // ← CORRIGIDO 3a
 
-    /** Liberado pelo startup guard após resetar todos os itens stale e reindexar posições.
-     *  O processLoop fica parado até este deferred ser completado. */
+    /** Liberado pelo startup guard após resetar todos os itens stale e reindexar posições. */
     private val startupReady = CompletableDeferred<Unit>()
-
 
     init {
         processorJob = CoroutineScope(Dispatchers.Default).launch {
@@ -69,12 +92,10 @@ class ProcessingQueue(
 
     /**
      * Watchdog periódico: a cada 2 minutos varre o DB em busca de itens "processando" ou "pendente"
-     * que já têm todos os formatos em arquivosProcessados — situação impossível no fluxo normal,
-     * mas que pode ocorrer por crash, exception, ou múltiplos usuários reenviando.
-     * Resolve os itens presos sem necessidade de restart do servidor.
+     * que já têm todos os formatos em arquivosProcessados.
      */
     private suspend fun watchdogLoop() {
-        delay(60_000L) // aguarda 1 min antes do primeiro scan (server ainda inicializando)
+        delay(60_000L)
         while (true) {
             try {
                 val candidates = withContext(Dispatchers.IO) {
@@ -85,7 +106,6 @@ class ProcessingQueue(
                     val solicitados = d.formatosSolicitados.ifEmpty { listOf("pdf") }
                     val jaGerados = d.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
                     if (solicitados.all { it.lowercase() in jaGerados }) {
-                        // Todos os formatos já estão registrados — verifica se não está ativo na fila
                         val estaAtivo = mutex.withLock {
                             currentItem?.desenhoId == d.id || queue.any { it.desenhoId == d.id }
                         }
@@ -101,7 +121,7 @@ class ProcessingQueue(
             } catch (e: Exception) {
                 AppLog.error("[WATCHDOG] Erro no scan: ${e.message}", e)
             }
-            delay(2 * 60_000L) // intervalo de 2 minutos entre cada scan
+            delay(2 * 60_000L)
         }
     }
 
@@ -118,12 +138,11 @@ class ProcessingQueue(
 
     /**
      * Atualiza o progresso de um formato e faz broadcast do progresso global.
-     * Chamado de dentro de uma thread bloqueante (InventorRunner), então usa runBlocking para broadcast.
      */
     private fun atualizarProgressoFormato(desenhoId: String, formato: String, progresso: Int, formatosSolicitados: List<String>) {
         val key = "$desenhoId:$formato"
         val anterior = progressoPorFormato[key] ?: 0
-        if (progresso <= anterior) return // Nunca regride
+        if (progresso <= anterior) return
         progressoPorFormato[key] = progresso
         val global = calcularProgressoGlobal(desenhoId, formatosSolicitados)
         desenhoDao.update(desenhoId, progresso = global)
@@ -134,15 +153,9 @@ class ProcessingQueue(
     }
 
     companion object {
-        /** Máximo de tentativas automáticas por formato */
         const val MAX_TENTATIVAS = 3
-        /** Delay (ms) entre tentativas para o Inventor se recuperar */
-        const val DELAY_RETRY_MS = 15_000L // 15 segundos
+        const val DELAY_RETRY_MS = 15_000L
 
-        /**
-         * Ordem de processamento: PDF > DWF > DWG (somente esses três).
-         * DWG sempre por último (mais pesado).
-         */
         private val FORMAT_ORDER = mapOf(
             "pdf" to 1,
             "dwf" to 2,
@@ -155,19 +168,15 @@ class ProcessingQueue(
     suspend fun add(desenhoId: String, formatosOverride: List<String>? = null) {
         val desenho = desenhoDao.getById(desenhoId) ?: return
 
-        // Quando chamado sem override (ex: startup, realtime INSERT), filtra formatos já gerados
-        // para não re-enfileirar formatos que já constam em arquivosProcessados.
-        // O override explícito (retry) passa os formatos desejados diretamente e não é filtrado.
         val jaGerados: Set<String> = if (formatosOverride == null) {
             desenho.arquivosProcessados.map { it.tipo.lowercase() }.toSet()
         } else {
             emptySet()
         }
 
-        // Ordena formatos por prioridade ANTES de adicionar (DWG sempre por último)
         val formatos = (formatosOverride?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }
             ?: desenho.formatosSolicitados.ifEmpty { listOf("pdf") })
-            .filter { it !in jaGerados }  // pula formatos já gerados (somente quando sem override)
+            .filter { it !in jaGerados }
             .sortedBy { formatPriority(it) }
 
         if (formatos.isEmpty()) {
@@ -177,7 +186,6 @@ class ProcessingQueue(
         val pos = desenhoDao.countPendentesEProcessando()
         AppLog.info("[QUEUE] Adicionando ${desenho.nomeArquivo}: formatos=${formatos} (ordenados por prioridade)")
         mutex.withLock {
-            // Ignora se este desenho já está sendo processado agora
             if (currentItem?.desenhoId == desenhoId) {
                 AppLog.info("[QUEUE] Ignorando add para ${desenho.nomeArquivo}: já está em processamento ativo")
                 return
@@ -186,14 +194,11 @@ class ProcessingQueue(
                 if (!queue.any { it.desenhoId == desenhoId && it.formato == f })
                     queue.add(Item(desenhoId, f, desenho.posicaoFila ?: pos, 1, desenho.horarioEnvio))
             }
-            // Ordena fila: posicao (FIFO) > horario_envio (primeiro recebido) > formato (DWG por ultimo)
             sortQueue()
         }
-        // Limpa progresso antigo ao adicionar (reenviar)
         progressoPorFormato.keys.filter { it.startsWith("$desenhoId:") }.forEach { progressoPorFormato.remove(it) }
     }
 
-    /** Ordena a fila por ordem de recebimento (FIFO): posicao_fila, depois horario_envio, depois formato (DWG por ultimo). */
     private fun sortQueue() {
         queue.sortWith(compareBy(
             { it.posicaoFila },
@@ -203,8 +208,6 @@ class ProcessingQueue(
         ))
     }
 
-    /** Chamado pelo startup guard após resetar todos os stale e reindexar posições.
-     *  Libera o processLoop para começar a processar. */
     fun markStartupComplete() {
         startupReady.complete(Unit)
     }
@@ -218,7 +221,6 @@ class ProcessingQueue(
                 removed = queue.size < before
             }
         }
-        // Limpa progresso deste desenho
         progressoPorFormato.keys.filter { it.startsWith("$desenhoId:") }.forEach { progressoPorFormato.remove(it) }
         return removed
     }
@@ -237,8 +239,6 @@ class ProcessingQueue(
     }
 
     private suspend fun processLoop() {
-        // Aguarda o startup guard terminar antes de processar qualquer item.
-        // Isso evita processar itens stale antes de o guard resetar estados inconsistentes do DB.
         startupReady.await()
         AppLog.info("[QUEUE] Startup concluído — iniciando processamento da fila")
 
@@ -246,226 +246,210 @@ class ProcessingQueue(
             var itemVar: Item? = null
             try {
                 itemVar = mutex.withLock {
-                if (queue.isEmpty()) {
-                    processing = false
-                    currentItem = null
+                    if (queue.isEmpty()) {
+                        processing = false
+                        currentItem = null
+                        lastDesenhoId = null
+                        null
+                    } else {
+                        processing = true
+                        val sameDesenhoIdx = lastDesenhoId?.let { did ->
+                            queue.indexOfFirst { it.desenhoId == did }.takeIf { it >= 0 }
+                        }
+                        val nextIdx = sameDesenhoIdx ?: 0
+                        currentItem = queue.removeAt(nextIdx)
+                        currentItem
+                    }
+                }
+                if (itemVar == null) {
+                    delay(1000)
+                    continue
+                }
+                val item = itemVar!!
+
+                if (lastDesenhoId != null && lastDesenhoId != item.desenhoId) {
+                    val prevId = lastDesenhoId!!
+                    val prevStillPending = mutex.withLock { queue.any { it.desenhoId == prevId } }
+                    if (prevStillPending) {
+                        AppLog.info("[QUEUE] Trocando de desenho: $prevId ainda tem formatos pendentes -> voltando para 'pendente'")
+                        desenhoDao.update(prevId, status = "pendente")
+                        desenhoDao.getById(prevId)?.let { runBlocking { broadcast.sendUpdate(it) } }
+                    }
+                }
+                lastDesenhoId = item.desenhoId
+
+                var desenho = desenhoDao.getById(item.desenhoId)
+                if (desenho == null || desenho.status == "cancelado") {
                     lastDesenhoId = null
-                    null
-                } else {
-                    processing = true
-                    val sameDesenhoIdx = lastDesenhoId?.let { did ->
-                        queue.indexOfFirst { it.desenhoId == did }.takeIf { it >= 0 }
-                    }
-                    val nextIdx = sameDesenhoIdx ?: 0
-                    currentItem = queue.removeAt(nextIdx)
-                    currentItem
-                }
-            }
-            if (itemVar == null) {
-                delay(1000)
-                continue
-            }
-            val item = itemVar!!
-            
-            if (lastDesenhoId != null && lastDesenhoId != item.desenhoId) {
-                val prevId = lastDesenhoId!!
-                val prevStillPending = mutex.withLock { queue.any { it.desenhoId == prevId } }
-                if (prevStillPending) {
-                    AppLog.info("[QUEUE] Trocando de desenho: $prevId ainda tem formatos pendentes -> voltando para 'pendente'")
-                    desenhoDao.update(prevId, status = "pendente")
-                    desenhoDao.getById(prevId)?.let { runBlocking { broadcast.sendUpdate(it) } }
-                }
-            }
-            lastDesenhoId = item.desenhoId
-
-            var desenho = desenhoDao.getById(item.desenhoId)
-            if (desenho == null || desenho.status == "cancelado") {
-                lastDesenhoId = null
-                currentItem = null
-                continue
-            }
-
-            // Inicializa progresso dos formatos para este desenho
-            val formatosSolicitados = desenho.formatosSolicitados.ifEmpty { listOf("pdf") }
-            formatosSolicitados.forEach { fmt ->
-                val key = "${item.desenhoId}:$fmt"
-                if (key !in progressoPorFormato) progressoPorFormato[key] = 0
-            }
-            // Marca formatos já concluídos anteriormente como 100%
-            desenho.arquivosProcessados.forEach { arq ->
-                val key = "${item.desenhoId}:${arq.tipo.lowercase()}"
-                progressoPorFormato[key] = 100
-            }
-
-            desenhoDao.update(item.desenhoId, status = "processando", progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados))
-            desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
-            val tentativaInfo = if (item.tentativa > 1) " [tentativa ${item.tentativa}/$MAX_TENTATIVAS]" else ""
-            AppLog.info("Processando desenho ${item.desenhoId} formato ${item.formato}$tentativaInfo (entrada: ${desenho.nomeArquivo})")
-
-            val arquivoEntrada = InventorRunner.resolverArquivoEntrada(
-                desenho.arquivoOriginal,
-                desenho.pastaProcessamento,
-                desenho.nomeArquivo
-            )
-            // Em modo dev, bypassa verificação de arquivo (IDW não existe localmente)
-            if (!Config.isDevMode && (arquivoEntrada.isEmpty() || !File(arquivoEntrada).exists())) {
-                val msg = "Arquivo original não encontrado: ${desenho.arquivoOriginal}"
-                AppLog.warn("$msg [desenho=${item.desenhoId}]")
-                desenhoDao.update(item.desenhoId, status = "erro", erro = msg)
-                broadcast.sendUpdate(desenhoDao.getById(item.desenhoId)!!)
-                lastDesenhoId = null
-                currentItem = null
-                continue
-            }
-
-            val pastaSaida = InventorRunner.destinoParaExportados(desenho.caminhoDestino)
-            val pastaControle = InventorRunner.pastaControle()
-
-            val result = withContext(Dispatchers.IO) {
-                InventorRunner.run(arquivoEntrada, pastaSaida, item.formato, pastaControle) { progressoFormato ->
-                    atualizarProgressoFormato(item.desenhoId, item.formato, progressoFormato, formatosSolicitados)
-                }
-            }
-
-            val reloaded = desenhoDao.getById(item.desenhoId)
-            if (reloaded == null) { lastDesenhoId = null; currentItem = null; continue }
-            desenho = reloaded
-            if (desenho.status == "cancelado") {
-                lastDesenhoId = null
-                currentItem = null
-                continue
-            }
-
-            val existentes = desenho.arquivosProcessados.toMutableList()
-            
-            // Rastrear formatos com erro
-            val errosAnteriores = desenho.erro?.split(";")?.filter { it.isNotBlank() }?.toMutableList() ?: mutableListOf()
-
-            // Reconciliação: se o resultado indica falha ou arquivo não registrado,
-            // verifica apenas se o arquivo deste item existe fisicamente na pasta de saída.
-            // A verificação é específica para o arquivo atual — não varre toda a pasta.
-            val arquivoReconciliado: String? = if (!result.success || result.arquivoGerado == null) {
-                val nomeBase = File(arquivoEntrada).nameWithoutExtension
-                val ext = item.formato.lowercase()
-                val esperado = File(pastaSaida.trim(), "$nomeBase.$ext")
-                if (esperado.exists()) {
-                    AppLog.info("[RECONCILE] Arquivo encontrado no destino apesar de falha reportada: ${esperado.absolutePath}")
-                    esperado.absolutePath
-                } else null
-            } else null
-
-            val arquivoGeradoFinal = result.arquivoGerado ?: arquivoReconciliado
-            val sucessoFinal = result.success || arquivoReconciliado != null
-
-            if (sucessoFinal && arquivoGeradoFinal != null) {
-                AppLog.info("Formato ${item.formato} concluído para ${item.desenhoId}: $arquivoGeradoFinal")
-                // Marca formato como 100%
-                progressoPorFormato["${item.desenhoId}:${item.formato}"] = 100
-                val novo = ArquivoProcessado(
-                    nome = File(arquivoGeradoFinal).name,
-                    tipo = item.formato,
-                    caminho = arquivoGeradoFinal,
-                    tamanho = File(arquivoGeradoFinal).length()
-                )
-                existentes.removeAll { it.tipo.equals(item.formato, ignoreCase = true) }
-                existentes.add(novo)
-                // Remove erro deste formato se existia
-                errosAnteriores.removeAll { it.startsWith("${item.formato}:") }
-            } else {
-                val errMsg = result.errorMessage ?: "Erro no processamento"
-                AppLog.error("Erro ao processar ${item.desenhoId} formato ${item.formato} (tentativa ${item.tentativa}/${MAX_TENTATIVAS}): $errMsg")
-
-                // Auto-retry: re-adicionar à fila se não esgotou tentativas
-                if (item.tentativa < MAX_TENTATIVAS) {
-                    val proxTentativa = item.tentativa + 1
-                    AppLog.info("[AUTO-RETRY] Reagendando ${desenho.nomeArquivo} formato ${item.formato} -> tentativa $proxTentativa/$MAX_TENTATIVAS (aguardando ${DELAY_RETRY_MS / 1000}s)")
-                    delay(DELAY_RETRY_MS)
-                    mutex.withLock {
-                        queue.add(Item(item.desenhoId, item.formato, item.posicaoFila, proxTentativa, item.horarioEnvio))
-                        sortQueue()
-                    }
-                    desenhoDao.update(item.desenhoId, status = "processando")
-                    desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
                     currentItem = null
                     continue
                 }
 
-                // Esgotou tentativas — registra erro definitivo
-                AppLog.error("[AUTO-RETRY] ${desenho.nomeArquivo} formato ${item.formato} FALHOU após $MAX_TENTATIVAS tentativas")
-                errosAnteriores.removeAll { it.startsWith("${item.formato}:") }
-                errosAnteriores.add("${item.formato}: falhou após ${MAX_TENTATIVAS} tentativas")
-            }
-            
-            // Calcula progresso via sistema de progresso por formato
-            val totalFormatos = formatosSolicitados.size
-            val concluidos = formatosSolicitados.count { fmt ->
-                existentes.any { it.tipo.equals(fmt, ignoreCase = true) }
-            }
-            
-            // Verifica se ainda há formatos pendentes na fila para este desenho
-            val formatosPendentes = mutex.withLock {
-                queue.filter { it.desenhoId == item.desenhoId }.map { it.formato }
-            }
-            val todoProcessado = formatosPendentes.isEmpty()
-            
-            // Se TODOS os formatos foram concluídos com sucesso, limpa erros antigos (retry resolveu)
-            if (concluidos >= totalFormatos && todoProcessado) {
-                errosAnteriores.clear()
-            }
-
-            // Determina status final
-            val novoStatus = when {
-                !todoProcessado -> "processando" // Ainda há formatos na fila
-                errosAnteriores.isEmpty() && concluidos >= totalFormatos -> "concluido"
-                errosAnteriores.isNotEmpty() && concluidos > 0 -> "concluido_com_erros"
-                errosAnteriores.isNotEmpty() -> "erro"
-                else -> if (concluidos > 0) "concluido_com_erros" else "erro" // Fallback: se terminou tudo e não é sucesso 100%, é erro
-            }
-            
-            val progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados)
-            
-            val statusTerminal = novoStatus in setOf("concluido", "concluido_com_erros", "erro", "cancelado")
-            desenhoDao.update(
-                item.desenhoId,
-                status = novoStatus,
-                progresso = progresso,
-                arquivosProcessados = json.encodeToString(existentes),
-                erro = if (errosAnteriores.isEmpty()) null else errosAnteriores.joinToString("; "),
-                clearPosicaoFila = statusTerminal && todoProcessado
-            )
-            desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
-
-            // Limpa progresso do mapa quando desenho termina completamente
-            if (todoProcessado) {
-                lastDesenhoId = null
+                val formatosSolicitados = desenho.formatosSolicitados.ifEmpty { listOf("pdf") }
                 formatosSolicitados.forEach { fmt ->
-                    progressoPorFormato.remove("${item.desenhoId}:$fmt")
+                    val key = "${item.desenhoId}:$fmt"
+                    if (!progressoPorFormato.containsKey(key)) progressoPorFormato[key] = 0
                 }
-            }
-            currentItem = null
-        } catch (e: Exception) {
-            AppLog.error("[QUEUE] Erro crítico no loop de processamento do desenho ${itemVar?.desenhoId}: ${e.message}", e)
-            // Se o item estava sendo processado, garante que o status no DB não fique preso em "processando"
-            val itemFailed = itemVar
-            if (itemFailed != null) {
-                try {
-                    withContext(Dispatchers.IO) {
-                        val d = desenhoDao.getById(itemFailed.desenhoId)
-                        if (d?.status == "processando") {
-                            val msg = "Erro interno no processamento: ${e.message?.take(200) ?: "exceção desconhecida"}"
-                            AppLog.warn("[QUEUE] Marcando ${d.nomeArquivo} como 'erro' após exceção crítica")
-                            desenhoDao.update(itemFailed.desenhoId, status = "erro", erro = msg, clearPosicaoFila = true)
-                            desenhoDao.getById(itemFailed.desenhoId)?.let { broadcast.sendUpdate(it) }
-                        }
+                desenho.arquivosProcessados.forEach { arq ->
+                    val key = "${item.desenhoId}:${arq.tipo.lowercase()}"
+                    progressoPorFormato[key] = 100
+                }
+
+                desenhoDao.update(item.desenhoId, status = "processando", progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados))
+                desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
+                val tentativaInfo = if (item.tentativa > 1) " [tentativa ${item.tentativa}/$MAX_TENTATIVAS]" else ""
+                AppLog.info("Processando desenho ${item.desenhoId} formato ${item.formato}$tentativaInfo (entrada: ${desenho.nomeArquivo})")
+
+                val arquivoEntrada = InventorRunner.resolverArquivoEntrada(
+                    desenho.arquivoOriginal,
+                    desenho.pastaProcessamento,
+                    desenho.nomeArquivo
+                )
+                if (!Config.isDevMode && (arquivoEntrada.isEmpty() || !File(arquivoEntrada).exists())) {
+                    val msg = "Arquivo original não encontrado: ${desenho.arquivoOriginal}"
+                    AppLog.warn("$msg [desenho=${item.desenhoId}]")
+                    desenhoDao.update(item.desenhoId, status = "erro", erro = msg)
+                    broadcast.sendUpdate(desenhoDao.getById(item.desenhoId)!!)
+                    lastDesenhoId = null
+                    currentItem = null
+                    continue
+                }
+
+                val pastaSaida = InventorRunner.destinoParaExportados(desenho.caminhoDestino)
+                val pastaControle = InventorRunner.pastaControle()
+
+                val result = withContext(Dispatchers.IO) {
+                    InventorRunner.run(arquivoEntrada, pastaSaida, item.formato, pastaControle) { progressoFormato ->
+                        atualizarProgressoFormato(item.desenhoId, item.formato, progressoFormato, formatosSolicitados)
                     }
-                } catch (inner: Exception) {
-                    AppLog.error("[QUEUE] Falha ao atualizar status após exceção: ${inner.message}", inner)
                 }
+
+                val reloaded = desenhoDao.getById(item.desenhoId)
+                if (reloaded == null) { lastDesenhoId = null; currentItem = null; continue }
+                desenho = reloaded
+                if (desenho.status == "cancelado") {
+                    lastDesenhoId = null
+                    currentItem = null
+                    continue
+                }
+
+                val existentes = desenho.arquivosProcessados.toMutableList()
+                val errosAnteriores = desenho.erro?.split(";")?.filter { it.isNotBlank() }?.toMutableList() ?: mutableListOf()
+
+                val arquivoReconciliado: String? = if (!result.success || result.arquivoGerado == null) {
+                    val nomeBase = File(arquivoEntrada).nameWithoutExtension
+                    val ext = item.formato.lowercase()
+                    val esperado = File(pastaSaida.trim(), "$nomeBase.$ext")
+                    if (esperado.exists()) {
+                        AppLog.info("[RECONCILE] Arquivo encontrado no destino apesar de falha reportada: ${esperado.absolutePath}")
+                        esperado.absolutePath
+                    } else null
+                } else null
+
+                val arquivoGeradoFinal = result.arquivoGerado ?: arquivoReconciliado
+                val sucessoFinal = result.success || arquivoReconciliado != null
+
+                if (sucessoFinal && arquivoGeradoFinal != null) {
+                    AppLog.info("Formato ${item.formato} concluído para ${item.desenhoId}: $arquivoGeradoFinal")
+                    progressoPorFormato["${item.desenhoId}:${item.formato}"] = 100
+                    val novo = ArquivoProcessado(
+                        nome = File(arquivoGeradoFinal).name,
+                        tipo = item.formato,
+                        caminho = arquivoGeradoFinal,
+                        tamanho = File(arquivoGeradoFinal).length()
+                    )
+                    existentes.removeAll { it.tipo.equals(item.formato, ignoreCase = true) }
+                    existentes.add(novo)
+                    errosAnteriores.removeAll { it.startsWith("${item.formato}:") }
+                } else {
+                    val errMsg = result.errorMessage ?: "Erro no processamento"
+                    AppLog.error("Erro ao processar ${item.desenhoId} formato ${item.formato} (tentativa ${item.tentativa}/${MAX_TENTATIVAS}): $errMsg")
+
+                    if (item.tentativa < MAX_TENTATIVAS) {
+                        val proxTentativa = item.tentativa + 1
+                        AppLog.info("[AUTO-RETRY] Reagendando ${desenho.nomeArquivo} formato ${item.formato} -> tentativa $proxTentativa/$MAX_TENTATIVAS (aguardando ${DELAY_RETRY_MS / 1000}s)")
+                        delay(DELAY_RETRY_MS)
+                        mutex.withLock {
+                            queue.add(Item(item.desenhoId, item.formato, item.posicaoFila, proxTentativa, item.horarioEnvio))
+                            sortQueue()
+                        }
+                        desenhoDao.update(item.desenhoId, status = "processando")
+                        desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
+                        currentItem = null
+                        continue
+                    }
+
+                    AppLog.error("[AUTO-RETRY] ${desenho.nomeArquivo} formato ${item.formato} FALHOU após $MAX_TENTATIVAS tentativas")
+                    errosAnteriores.removeAll { it.startsWith("${item.formato}:") }
+                    errosAnteriores.add("${item.formato}: falhou após ${MAX_TENTATIVAS} tentativas")
+                }
+
+                val totalFormatos = formatosSolicitados.size
+                val concluidos = formatosSolicitados.count { fmt ->
+                    existentes.any { it.tipo.equals(fmt, ignoreCase = true) }
+                }
+
+                val formatosPendentes = mutex.withLock {
+                    queue.filter { it.desenhoId == item.desenhoId }.map { it.formato }
+                }
+                val todoProcessado = formatosPendentes.isEmpty()
+
+                if (concluidos >= totalFormatos && todoProcessado) {
+                    errosAnteriores.clear()
+                }
+
+                val novoStatus = when {
+                    !todoProcessado -> "processando"
+                    errosAnteriores.isEmpty() && concluidos >= totalFormatos -> "concluido"
+                    errosAnteriores.isNotEmpty() && concluidos > 0 -> "concluido_com_erros"
+                    errosAnteriores.isNotEmpty() -> "erro"
+                    else -> if (concluidos > 0) "concluido_com_erros" else "erro"
+                }
+
+                val progresso = calcularProgressoGlobal(item.desenhoId, formatosSolicitados)
+                val statusTerminal = novoStatus in setOf("concluido", "concluido_com_erros", "erro", "cancelado")
+
+                desenhoDao.update(
+                    item.desenhoId,
+                    status = novoStatus,
+                    progresso = progresso,
+                    arquivosProcessados = json.encodeToString(existentes),
+                    erro = if (errosAnteriores.isEmpty()) null else errosAnteriores.joinToString("; "),
+                    clearErro = errosAnteriores.isEmpty(),   // ← CORRIGIDO 3b: limpa NULL no banco quando sem erros
+                    clearPosicaoFila = statusTerminal && todoProcessado
+                )
+                desenhoDao.getById(item.desenhoId)?.let { broadcast.sendUpdate(it) }
+
+                if (todoProcessado) {
+                    lastDesenhoId = null
+                    formatosSolicitados.forEach { fmt ->
+                        progressoPorFormato.remove("${item.desenhoId}:$fmt")
+                    }
+                }
+                currentItem = null
+
+            } catch (e: Exception) {
+                AppLog.error("[QUEUE] Erro crítico no loop de processamento do desenho ${itemVar?.desenhoId}: ${e.message}", e)
+                val itemFailed = itemVar
+                if (itemFailed != null) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val d = desenhoDao.getById(itemFailed.desenhoId)
+                            if (d?.status == "processando") {
+                                val msg = "Erro interno no processamento: ${e.message?.take(200) ?: "exceção desconhecida"}"
+                                AppLog.warn("[QUEUE] Marcando ${d.nomeArquivo} como 'erro' após exceção crítica")
+                                desenhoDao.update(itemFailed.desenhoId, status = "erro", erro = msg, clearPosicaoFila = true)
+                                desenhoDao.getById(itemFailed.desenhoId)?.let { broadcast.sendUpdate(it) }
+                            }
+                        }
+                    } catch (inner: Exception) {
+                        AppLog.error("[QUEUE] Falha ao atualizar status após exceção: ${inner.message}", inner)
+                    }
+                }
+                lastDesenhoId = null
+                currentItem = null
+                delay(2000)
             }
-            lastDesenhoId = null
-            currentItem = null
-            delay(2000)
-        }
         }
     }
 }
