@@ -4,6 +4,8 @@ plugins {
     id("org.jetbrains.compose")
 }
 
+val appVersion = findProperty("app.version") as String
+
 kotlin {
     androidTarget()
     sourceSets {
@@ -26,7 +28,7 @@ android {
         minSdk = (findProperty("android.minSdk") as String).toInt()
         targetSdk = (findProperty("android.targetSdk") as String).toInt()
         versionCode = 1
-        versionName = "1.0"
+        versionName = appVersion
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -1,6 +1,7 @@
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.Divider
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.material.darkColors
@@ -9,7 +10,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import data.ApiClient
 import data.IDesenhoRepository
 import data.RealtimeClient
@@ -95,6 +102,8 @@ fun App(repository: IDesenhoRepository) {
     }.collectAsState(initial = emptyList())
 
     val scope = rememberCoroutineScope()
+    val footerVersion = remember { AppVersion.footerVersion() }
+    val footerSuffix = remember { AppVersion.footerSuffix() }
     
     var showSettings by remember { mutableStateOf(false) }
 
@@ -208,7 +217,6 @@ fun App(repository: IDesenhoRepository) {
             modifier = Modifier
                 .fillMaxSize()
                 .background(AppColors.Background)
-                .padding(16.dp)
                 .focusRequester(focusRequester)
                 .focusable()
                 .onKeyEvent { event ->
@@ -231,9 +239,35 @@ fun App(repository: IDesenhoRepository) {
                 actions = actions,
                 updateAvailable = if (updateDismissed) updateAvailable else null,
                 onUpdateClick = { showUpdateDialog = true },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 16.dp),
                 isRefreshing = isRefreshing,
                 onSettingsClick = { showSettings = true }
+            )
+
+            Divider(color = AppColors.Border, thickness = 0.5.dp)
+
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(
+                        style = SpanStyle(
+                            color = AppColors.Primary.copy(alpha = 0.88f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    ) {
+                        append(footerVersion)
+                    }
+                    withStyle(style = SpanStyle(color = AppColors.TextMuted)) {
+                        append(footerSuffix)
+                    }
+                },
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
             )
         }
         

@@ -3,7 +3,7 @@ package util
 import kotlinx.serialization.Serializable
 
 /**
- * Informações sobre uma versão disponível para atualização
+ * Informacoes sobre uma versao disponivel para atualizacao
  */
 @Serializable
 data class VersionInfo(
@@ -14,39 +14,54 @@ data class VersionInfo(
 )
 
 /**
- * Utilitários para gerenciamento de versões
+ * Utilitarios para gerenciamento de versoes
  */
 object AppVersion {
-    // Versão atual do app (será lida do version.txt em runtime)
+    private const val companyLegalName = "JHONROB SILOS E SECADORES LTDA" // CORRIGIDO: SILOES → SILOS
+    private const val copyrightNotice = "TODOS OS DIREITOS RESERVADOS."
+
     var current: String = "1.0.0"
         private set
-    
-    /**
-     * Inicializa a versão atual lendo do arquivo version.txt nos resources
-     */
+
     fun init() {
         try {
-            val versionText = Thread.currentThread().contextClassLoader
-                ?.getResourceAsStream("version.txt")
-                ?.bufferedReader()
-                ?.readText()
-                ?.trim()
+            val versionText = readVersionFromResources()
             if (!versionText.isNullOrBlank()) {
                 current = versionText
             }
         } catch (e: Exception) {
-            // Mantém versão padrão
+            // Mantem versao padrao
         }
     }
-    
-    /**
-     * Compara duas versões semver
-     * @return positivo se v1 > v2, negativo se v1 < v2, zero se iguais
-     */
+
+    fun footerVersion(): String {
+        val resolvedVersion = readVersionFromResources().orEmpty().ifBlank { current }
+        return if (resolvedVersion.startsWith("v", ignoreCase = true)) {
+            resolvedVersion
+        } else {
+            "v$resolvedVersion"
+        }
+    }
+
+    fun footerSuffix(): String {
+        return " - $companyLegalName \u00A9 $copyrightNotice"
+    }
+
+    fun footerMessage(): String {
+        return footerVersion() + footerSuffix()
+    }
+
+    private fun readVersionFromResources(): String? {
+        return Thread.currentThread().contextClassLoader
+            ?.getResourceAsStream("version.txt")
+            ?.bufferedReader()
+            ?.readText()
+            ?.trim()
+    }
+
     fun compare(v1: String, v2: String): Int {
         val parts1 = v1.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
         val parts2 = v2.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-        
         val maxLen = maxOf(parts1.size, parts2.size)
         for (i in 0 until maxLen) {
             val p1 = parts1.getOrElse(i) { 0 }
@@ -55,10 +70,7 @@ object AppVersion {
         }
         return 0
     }
-    
-    /**
-     * Verifica se há uma versão mais nova disponível
-     */
+
     fun isNewerVersion(remoteVersion: String): Boolean {
         return compare(remoteVersion, current) > 0
     }
