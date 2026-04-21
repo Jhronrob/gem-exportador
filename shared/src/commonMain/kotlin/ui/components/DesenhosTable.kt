@@ -1241,7 +1241,7 @@ private data class YearMonth(val year: Int, val month: Int) {
         val y0 = if (month <= 2) year - 1 else year
         val m0 = if (month <= 2) month + 12 else month
         val t = intArrayOf(0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
-        return (y0 + y0 / 4 - y0 / 100 + y0 / 400 + t[m0 - 3] + 1) % 7
+        return (y0 + y0 / 4 - y0 / 100 + y0 / 400 + t[month - 1] + 1) % 7
     }
     fun toTriple(day: Int) = Triple(year, month, day)
 }
