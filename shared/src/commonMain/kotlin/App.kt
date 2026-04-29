@@ -154,9 +154,25 @@ fun App(repository: IDesenhoRepository) {
     
     // Dados vêm do servidor via WebSocket (não há sincronização local → servidor)
 
-    // Ações: UI otimista - atualiza local IMEDIATAMENTE, depois envia para o servidor
+    // Ações: a maioria usa UI otimista; regeneração aguarda aceite do servidor.
     val actions = remember(apiClient, repository) {
         DesenhoActions(
+            onRegenerate = { desenho ->
+                logToFile("INFO", "Regeneração solicitada: ${desenho.nomeArquivo} (${desenho.id})")
+                scope.launch(Dispatchers.Default) {
+                    if (apiClient != null) {
+                        val result = apiClient.regenerar(desenho.id)
+                        if (result.isFailure) {
+                            logToFile("ERROR", "Falha ao regenerar ${desenho.nomeArquivo}: ${result.exceptionOrNull()?.message}")
+                        } else {
+                            logToFile("INFO", "Regeneração aceita pelo servidor: ${desenho.nomeArquivo}")
+                            repository.updateStatus(desenho.id, "pendente", getCurrentDateTime())
+                        }
+                    } else {
+                        logToFile("ERROR", "ApiClient nulo - servidor não configurado")
+                    }
+                }
+            },
             onRetry = { desenho ->
                 logToFile("INFO", "Reenviar solicitado: ${desenho.nomeArquivo} (${desenho.id})")
                 repository.updateStatus(desenho.id, "pendente", getCurrentDateTime())

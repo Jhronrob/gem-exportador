@@ -52,6 +52,18 @@ class ApiClient(private val baseUrl: String) {
         logToFile("INFO", "Retry aceito pelo servidor para $desenhoId")
     }
 
+    suspend fun regenerar(desenhoId: String): Result<Unit> = runCatching {
+        val response = client.post("$baseUrl/api/desenhos/$desenhoId/regenerar") {
+            contentType(ContentType.Application.Json)
+        }
+        if (!response.status.isSuccess()) {
+            val erro = response.bodyAsText()
+            logToFile("ERROR", "Regeneração rejeitada pelo servidor (${response.status}): $erro")
+            throw Exception("Erro ${response.status}: $erro")
+        }
+        logToFile("INFO", "Regeneração aceita pelo servidor para $desenhoId")
+    }
+
     suspend fun cancelar(desenhoId: String): Result<Unit> = runCatching {
         val response = client.post("$baseUrl/api/desenhos/$desenhoId/cancelar") {
             contentType(ContentType.Application.Json)

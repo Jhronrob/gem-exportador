@@ -3,46 +3,49 @@
  *
  * Testes de integração HTTP contra o servidor gem-exportador rodando localmente.
  * Valida comportamento end-to-end que a lógica pura em desenhoDao.test.mjs
- * não consegue cobrir — especificamente o campo `erro` sendo persistido e
- * limpo no PostgreSQL real.
+ * não consegue cobrir, incluindo o novo fluxo de regeneração de concluídos.
  *
- * PRÉ-REQUISITO:
- *   O servidor deve estar rodando antes de executar estes testes:
- *     cd gem-exportador && ./start-dev.sh    (modo dev com mock Inventor)
- *
- * COMO RODAR APENAS ESTES TESTES:
- *   cd tests/jest && npm test -- api.integration
- *
- * NOTA: Estes testes requerem Node 18+ (fetch nativo).
- *   Em versões anteriores, instalar: npm install node-fetch
- *   E substituir as chamadas fetch por import fetch from 'node-fetch'.
- *
- * SKIP automático: se o servidor não estiver acessível, os testes são pulados
- * sem falhar o CI. Basta que o servidor responda em SERVER_URL.
+ * Pré-requisito:
+ *   O servidor deve estar rodando antes de executar estes testes.
+ *   Exemplo no modo dev:
+ *     ./gradlew :server:run -PgemEnvFile=.env.dev
  */
 
-const SERVER_URL = process.env.SERVER_URL || "http://localhost:8080";
-const TIMEOUT_MS = 60_000; // 60s para processar no modo dev
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const SERVER_URL = process.env.SERVER_URL || "http://localhost:8080";
+const TIMEOUT_MS = 60_000;
+const tempDirs = new Set();
 
 async function serverAtivo() {
   try {
-    const res = await fetch(`${SERVER_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${SERVER_URL}/api/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
     return res.ok;
   } catch {
     return false;
   }
 }
 
+async function criarArquivoOriginalTemporario(nomeArquivo = "teste-unitario.idw") {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "gem-exportador-jest-"));
+  tempDirs.add(dir);
+  const arquivoOriginal = path.join(dir, nomeArquivo);
+  await writeFile(arquivoOriginal, "[JEST] desenho temporario para integracao");
+  return arquivoOriginal;
+}
+
 async function criarDesenho(overrides = {}) {
+  const nomeArquivo = overrides.nomeArquivo || "teste-unitario.idw";
+  const arquivoOriginal = overrides.arquivoOriginal || await criarArquivoOriginalTemporario(nomeArquivo);
   const body = {
-    nomeArquivo: "teste-unitario.idw",
+    nomeArquivo,
     computador: "PC-JEST-TEST",
     caminhoDestino: "C:\\\\desenhos gerenciador 3d\\\\jest",
-    arquivoOriginal: "C:\\\\projetos\\\\teste.ipt",
+    arquivoOriginal,
     formatos: ["pdf"],
     ...overrides,
   };
@@ -60,6 +63,19 @@ async function getDesenho(id) {
   return res.json();
 }
 
+function arquivosProcessadosOf(desenho) {
+  if (!desenho) return [];
+  if (Array.isArray(desenho.arquivosProcessados)) return desenho.arquivosProcessados;
+  if (typeof desenho.arquivos_processados === "string" && desenho.arquivos_processados.trim() !== "") {
+    try {
+      return JSON.parse(desenho.arquivos_processados);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 async function aguardarStatus(id, statusEsperado, timeoutMs = TIMEOUT_MS) {
   const inicio = Date.now();
   while (Date.now() - inicio < timeoutMs) {
@@ -68,16 +84,13 @@ async function aguardarStatus(id, statusEsperado, timeoutMs = TIMEOUT_MS) {
     if (d.status === statusEsperado) return d;
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return await getDesenho(id); // retorna o estado final mesmo com timeout
+  return await getDesenho(id);
 }
 
 async function deletarDesenho(id) {
   await fetch(`${SERVER_URL}/api/desenhos/${id}`, { method: "DELETE" });
 }
 
-// ---------------------------------------------------------------------------
-// Setup: pula todos os testes se o servidor não está acessível
-// ---------------------------------------------------------------------------
 let skipAll = false;
 
 beforeAll(async () => {
@@ -85,11 +98,18 @@ beforeAll(async () => {
   if (!ativo) {
     console.warn(
       `\n[SKIP] Servidor não acessível em ${SERVER_URL}.\n` +
-      `Execute "./start-dev.sh" antes de rodar os testes de integração.\n`
+      `Execute "./gradlew :server:run -PgemEnvFile=.env.dev" antes de rodar os testes de integração.\n`
     );
     skipAll = true;
   }
 }, 5000);
+
+afterEach(async () => {
+  for (const dir of tempDirs) {
+    await rm(dir, { recursive: true, force: true });
+  }
+  tempDirs.clear();
+});
 
 const it = (name, fn, timeout) => {
   global.it(name, async () => {
@@ -98,11 +118,7 @@ const it = (name, fn, timeout) => {
   }, timeout);
 };
 
-// ---------------------------------------------------------------------------
-// Testes de criação e validação básica
-// ---------------------------------------------------------------------------
-describe("POST /api/desenhos/queue — criação de desenho", () => {
-
+describe("POST /api/desenhos/queue - criação de desenho", () => {
   let idCriado;
 
   afterAll(async () => {
@@ -111,7 +127,7 @@ describe("POST /api/desenhos/queue — criação de desenho", () => {
 
   it("cria um desenho e retorna id, status e posicaoFila", async () => {
     const { res, body } = await criarDesenho();
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(201);
     expect(body).toHaveProperty("id");
     expect(body).toHaveProperty("status", "pendente");
     expect(body).toHaveProperty("posicaoFila");
@@ -134,12 +150,9 @@ describe("POST /api/desenhos/queue — criação de desenho", () => {
     expect(res.status).toBe(400);
   });
 
-  it("formato misto: só válidos são aceitos — pdf e step → só pdf", async () => {
-    // Se a validação funciona, o desenho deve ser criado com apenas "pdf"
-    // (ou rejeitado se exigir todos válidos — depende da implementação)
+  it("formato misto mantém só os válidos", async () => {
     const { res, body } = await criarDesenho({ formatos: ["pdf", "step"] });
     if (res.ok) {
-      // Se aceitar, verifica que step foi descartado
       expect(body.formatosSolicitados).not.toContain("step");
       if (body.id) await deletarDesenho(body.id);
     } else {
@@ -148,11 +161,7 @@ describe("POST /api/desenhos/queue — criação de desenho", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// [BUG-1] Teste de integração: campo erro deve ser limpo após sucesso
-// ---------------------------------------------------------------------------
-describe("[BUG-1] campo erro — persistência e limpeza no banco", () => {
-
+describe("[BUG-1] campo erro - persistência e limpeza no banco", () => {
   it(
     "após processamento com sucesso em modo dev, campo erro deve ser null",
     async () => {
@@ -161,14 +170,9 @@ describe("[BUG-1] campo erro — persistência e limpeza no banco", () => {
       const id = body.id;
 
       try {
-        // Aguarda o modo dev processar (mock rápido ~8s por default)
         const final = await aguardarStatus(id, "concluido");
         expect(final).not.toBeNull();
         expect(final.status).toBe("concluido");
-
-        // ASSERÇÃO CENTRAL do BUG-1:
-        // Antes da correção: erro pode ter valor residual de uma tentativa anterior
-        // Após a correção: erro DEVE ser null quando status é "concluido"
         expect(final.erro).toBeNull();
       } finally {
         await deletarDesenho(id);
@@ -178,17 +182,13 @@ describe("[BUG-1] campo erro — persistência e limpeza no banco", () => {
   );
 
   it(
-    "desenho concluido não deve ter campo erro preenchido mesmo após reenvio",
+    "desenho concluido não deve ter campo erro preenchido após conclusão",
     async () => {
-      // Cria, aguarda conclusão, re-envia (simula retry do usuário), aguarda novamente
-      const { body: b1 } = await criarDesenho();
-      const id = b1.id;
+      const { body } = await criarDesenho();
+      const id = body.id;
 
       try {
         await aguardarStatus(id, "concluido");
-
-        // Re-envia o mesmo arquivo (operação de retry via /queue com mesmo computador)
-        // Verifica que o desenho continua sem erro após o segundo processamento
         const final = await getDesenho(id);
         if (final?.status === "concluido") {
           expect(final.erro).toBeNull();
@@ -201,27 +201,109 @@ describe("[BUG-1] campo erro — persistência e limpeza no banco", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Testes de status e progressão
-// ---------------------------------------------------------------------------
-describe("progressão de status durante processamento", () => {
-
+describe("POST /api/desenhos/{id}/regenerar", () => {
   it(
-    "status começa em 'pendente' ou 'processando' logo após criação",
+    "reenfileira um desenho concluido no mesmo registro e regenera os formatos originais",
     async () => {
-      const { body } = await criarDesenho();
+      const { res, body } = await criarDesenho({ formatos: ["pdf", "dwf"] });
+      expect(res.ok).toBe(true);
       const id = body.id;
 
       try {
-        const d = await getDesenho(id);
-        expect(["pendente", "processando"]).toContain(d.status);
-        expect(d.progresso).toBeGreaterThanOrEqual(0);
-        expect(d.progresso).toBeLessThanOrEqual(100);
+        const concluido = await aguardarStatus(id, "concluido");
+        expect(concluido).not.toBeNull();
+        const tiposAntes = arquivosProcessadosOf(concluido).map((a) => a.tipo.toLowerCase()).sort();
+        expect(tiposAntes).toEqual(["dwf", "pdf"]);
+
+        const regenRes = await fetch(`${SERVER_URL}/api/desenhos/${id}/regenerar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        expect(regenRes.ok).toBe(true);
+        const regenBody = await regenRes.json();
+        expect(regenBody).toHaveProperty("id", id);
+        expect(regenBody).toHaveProperty("status", "pendente");
+        expect(regenBody).toHaveProperty("formatosRestantes");
+        expect(regenBody.formatosRestantes).toEqual(["pdf", "dwf"]);
+
+        const aposSolicitacao = await getDesenho(id);
+        expect(aposSolicitacao?.id).toBe(id);
+        expect(["pendente", "processando", "concluido"]).toContain(aposSolicitacao?.status);
+        const tiposDuranteRegeneracao = arquivosProcessadosOf(aposSolicitacao).map((a) => a.tipo.toLowerCase()).sort();
+        expect(tiposDuranteRegeneracao).toEqual(["dwf", "pdf"]);
+
+        const final = await aguardarStatus(id, "concluido");
+        expect(final).not.toBeNull();
+        expect(final.id).toBe(id);
+        expect(final.status).toBe("concluido");
+        const tiposDepois = arquivosProcessadosOf(final).map((a) => a.tipo.toLowerCase()).sort();
+        expect(tiposDepois).toEqual(["dwf", "pdf"]);
       } finally {
         await deletarDesenho(id);
       }
-    }
+    },
+    TIMEOUT_MS * 2 + 5000
   );
+
+  it(
+    "nao aceita duas regenerações sequenciais para o mesmo concluido",
+    async () => {
+      const { body } = await criarDesenho({ formatos: ["pdf"] });
+      const id = body.id;
+
+      try {
+        const concluido = await aguardarStatus(id, "concluido");
+        expect(concluido).not.toBeNull();
+        expect(concluido.status).toBe("concluido");
+
+        const primeira = await fetch(`${SERVER_URL}/api/desenhos/${id}/regenerar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        expect(primeira.ok).toBe(true);
+
+        const segunda = await fetch(`${SERVER_URL}/api/desenhos/${id}/regenerar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        expect([400, 409]).toContain(segunda.status);
+      } finally {
+        await deletarDesenho(id);
+      }
+    },
+    TIMEOUT_MS * 2 + 5000
+  );
+
+  it("rejeita regeneração para desenho que ainda nao concluiu", async () => {
+    const { body } = await criarDesenho({ formatos: ["pdf"] });
+    const id = body.id;
+
+    try {
+      const regenRes = await fetch(`${SERVER_URL}/api/desenhos/${id}/regenerar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(regenRes.status).toBe(400);
+    } finally {
+      await deletarDesenho(id);
+    }
+  });
+});
+
+describe("progressão de status durante processamento", () => {
+  it("status começa em 'pendente' ou 'processando' logo após criação", async () => {
+    const { body } = await criarDesenho();
+    const id = body.id;
+
+    try {
+      const d = await getDesenho(id);
+      expect(["pendente", "processando"]).toContain(d.status);
+      expect(d.progresso).toBeGreaterThanOrEqual(0);
+      expect(d.progresso).toBeLessThanOrEqual(100);
+    } finally {
+      await deletarDesenho(id);
+    }
+  });
 
   it(
     "progresso chega a 100 quando status é 'concluido'",
@@ -247,7 +329,7 @@ describe("progressão de status durante processamento", () => {
 
       try {
         const final = await aguardarStatus(id, "concluido");
-        const tipos = (final?.arquivosProcessados ?? []).map((a) => a.tipo.toLowerCase());
+        const tipos = arquivosProcessadosOf(final).map((a) => a.tipo.toLowerCase());
         expect(tipos).toContain("pdf");
       } finally {
         await deletarDesenho(id);
@@ -257,13 +339,9 @@ describe("progressão de status durante processamento", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Testes do endpoint de status da fila
-// ---------------------------------------------------------------------------
-describe("GET /api/queue/status", () => {
-
+describe("GET /api/queue", () => {
   it("retorna estrutura de status da fila", async () => {
-    const res = await fetch(`${SERVER_URL}/api/queue/status`);
+    const res = await fetch(`${SERVER_URL}/api/queue`);
     expect(res.ok).toBe(true);
     const body = await res.json();
     expect(body).toHaveProperty("tamanho");
@@ -273,17 +351,13 @@ describe("GET /api/queue/status", () => {
   });
 
   it("tamanho da fila é >= 0", async () => {
-    const res = await fetch(`${SERVER_URL}/api/queue/status`);
+    const res = await fetch(`${SERVER_URL}/api/queue`);
     const body = await res.json();
     expect(body.tamanho).toBeGreaterThanOrEqual(0);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Testes de listagem e paginação
-// ---------------------------------------------------------------------------
-describe("GET /api/desenhos — listagem", () => {
-
+describe("GET /api/desenhos - listagem", () => {
   it("retorna estrutura paginada válida", async () => {
     const res = await fetch(`${SERVER_URL}/api/desenhos?limit=5&offset=0`);
     expect(res.ok).toBe(true);
@@ -304,20 +378,16 @@ describe("GET /api/desenhos — listagem", () => {
     }
   });
 
-  it("limit=0 retorna lista vazia (edge case)", async () => {
+  it("limit=0 retorna lista vazia", async () => {
     const res = await fetch(`${SERVER_URL}/api/desenhos?limit=0`);
     const body = await res.json();
     expect(body.desenhos).toHaveLength(0);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Health check
-// ---------------------------------------------------------------------------
-describe("GET /health", () => {
-
+describe("GET /api/health", () => {
   it("servidor responde 200 com indicação de saúde", async () => {
-    const res = await fetch(`${SERVER_URL}/health`);
+    const res = await fetch(`${SERVER_URL}/api/health`);
     expect(res.status).toBe(200);
   });
 });

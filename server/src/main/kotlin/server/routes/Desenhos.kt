@@ -71,6 +71,7 @@ data class CancelResponse(
 
 /** Lock para atribuicao atomica de posicao na fila (FIFO: primeiro recebido = menor posicao). */
 private val queuePositionLock = Any()
+private val supportedRegenerationFormats = setOf("pdf", "dwf", "dwg")
 
 fun Route.apiDesenhos(desenhoDao: DesenhoDao, queue: ProcessingQueue, broadcast: Broadcast) {
     // GET /api/desenhos - lista com filtros e paginação
@@ -407,6 +408,79 @@ val validFormats = setOf("pdf", "dwf", "dwg")
         queue.add(id, restantes)
         desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
         call.respond(SuccessResponse(sucesso = true, mensagem = "Desenho na fila para reprocessamento", id = id, status = "pendente", posicaoFila = pos, formatosRestantes = restantes))
+    }
+
+    // POST /api/desenhos/{id}/regenerar
+    post("/api/desenhos/{id}/regenerar") {
+        val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest)
+        AppLog.info("[REGENERAR] Recebida solicitacao para desenho $id")
+        val d = desenhoDao.getById(id)
+        if (d == null) {
+            AppLog.warn("[REGENERAR] Desenho $id nao encontrado")
+            call.respond(HttpStatusCode.NotFound, ErrorResponse(erro = "Desenho não encontrado"))
+            return@post
+        }
+        if (d.status != "concluido") {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Regeneração não permitida",
+                mensagem = "Refazer geração só é permitido para status 'concluido'. Status atual: '${d.status}'"
+            ))
+            return@post
+        }
+        val arquivoOriginal = d.arquivoOriginal
+        if (arquivoOriginal.isNullOrBlank()) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Arquivo original não informado",
+                mensagem = "O desenho não possui arquivoOriginal configurado para regeneração"
+            ))
+            return@post
+        }
+        val arquivoOriginalFile = File(arquivoOriginal)
+        if (!arquivoOriginalFile.exists()) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Arquivo original não encontrado",
+                mensagem = "O arquivo ${d.arquivoOriginal} não existe no servidor"
+            ))
+            return@post
+        }
+
+        val formatos = d.formatosSolicitados
+            .ifEmpty { listOf("pdf") }
+            .map { it.trim().lowercase() }
+            .filter { it in supportedRegenerationFormats }
+            .sortedBy { ProcessingQueue.formatPriority(it) }
+        if (formatos.isEmpty()) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(
+                erro = "Nenhum formato válido",
+                mensagem = "Não há formatos originais válidos para regeneração. Formatos suportados: pdf, dwf, dwg"
+            ))
+            return@post
+        }
+
+        val pos = synchronized(queuePositionLock) {
+            desenhoDao.countPendentesEProcessando() + 1
+        }
+        val now = java.time.Instant.now().toString()
+        val regenerationStarted = desenhoDao.startRegenerationIfConcluded(id, now, pos)
+        if (!regenerationStarted) {
+            val atual = desenhoDao.getById(id)
+            call.respond(HttpStatusCode.Conflict, ErrorResponse(
+                erro = "Regeneração já iniciada ou status alterado",
+                mensagem = "O desenho não está mais com status 'concluido'. Status atual: '${atual?.status ?: "desconhecido"}'"
+            ))
+            return@post
+        }
+        queue.add(id, formatos)
+        desenhoDao.getById(id)?.let { broadcast.sendUpdate(it) }
+        AppLog.info("[REGENERAR] ${d.nomeArquivo} reenfileirado com formatos=$formatos na posicao=$pos")
+        call.respond(SuccessResponse(
+            sucesso = true,
+            mensagem = "Desenho reenfileirado para regeneração completa",
+            id = id,
+            status = "pendente",
+            posicaoFila = pos,
+            formatosRestantes = formatos
+        ))
     }
 
     // DELETE /api/desenhos/{id} - deleta um desenho

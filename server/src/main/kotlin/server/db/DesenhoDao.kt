@@ -106,6 +106,30 @@ class DesenhoDao(private val database: Database) {
         }
     }
 
+    fun startRegenerationIfConcluded(id: String, horarioAtualizacao: String, posicaoFila: Int): Boolean {
+        return database.connection().use { conn ->
+            conn.prepareStatement("""
+                UPDATE desenho SET
+                    status = ?,
+                    horario_atualizacao = ?::TIMESTAMPTZ,
+                    atualizado_em = ?::TIMESTAMPTZ,
+                    progresso = ?,
+                    erro = NULL,
+                    posicao_fila = ?
+                WHERE id = ? AND status = ?
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, "pendente")
+                stmt.setString(2, horarioAtualizacao)
+                stmt.setString(3, horarioAtualizacao)
+                stmt.setInt(4, 0)
+                stmt.setInt(5, posicaoFila)
+                stmt.setString(6, id)
+                stmt.setString(7, "concluido")
+                stmt.executeUpdate() == 1
+            }
+        }
+    }
+
     /**
      * Insere um desenho no banco. Se o ID for null ou vazio, gera UUID automaticamente.
      * Retorna o ID do desenho inserido (gerado ou original).

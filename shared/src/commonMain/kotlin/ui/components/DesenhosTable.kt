@@ -44,6 +44,7 @@ private const val PAGE_SIZE = 50
  * Callback para ações do context menu
  */
 data class DesenhoActions(
+    val onRegenerate: (DesenhoAutodesk) -> Unit = {},
     val onRetry: (DesenhoAutodesk) -> Unit = {},
     val onCancel: (DesenhoAutodesk) -> Unit = {},
     val onDelete: (DesenhoAutodesk) -> Unit = {}
@@ -651,7 +652,9 @@ private fun AcoesCell(
 ) {
     var showDropdown by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showRegenerateConfirm by remember { mutableStateOf(false) }
     val status = desenho.statusEnum
+    val podeRegenerar = status == DesenhoStatus.CONCLUIDO
     val podeRetry = status == DesenhoStatus.ERRO || status == DesenhoStatus.CANCELADO || status == DesenhoStatus.CONCLUIDO_COM_ERROS
     val podeCancelar = status == DesenhoStatus.PENDENTE || status == DesenhoStatus.PROCESSANDO
     
@@ -693,6 +696,47 @@ private fun AcoesCell(
             dismissButton = {
                 OutlinedButton(
                     onClick = { showDeleteConfirm = false }
+                ) {
+                    Text("Cancelar", color = AppColors.TextSecondary)
+                }
+            },
+            backgroundColor = AppColors.Surface,
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+
+    if (showRegenerateConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRegenerateConfirm = false },
+            title = {
+                Text(
+                    text = "Refazer geração?",
+                    color = AppColors.TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "O desenho \"${desenho.nomeArquivo}\" será colocado novamente na fila para gerar todos os formatos originais.",
+                    color = AppColors.TextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRegenerateConfirm = false
+                        actions.onRegenerate(desenho)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = AppColors.Primary
+                    )
+                ) {
+                    Text("Refazer", color = AppColors.TextPrimary)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showRegenerateConfirm = false }
                 ) {
                     Text("Cancelar", color = AppColors.TextSecondary)
                 }
@@ -811,9 +855,22 @@ private fun AcoesCell(
             }
             
             // Ações
-            if (podeRetry || podeCancelar) {
+            if (podeRegenerar || podeRetry || podeCancelar) {
                 Divider(color = AppColors.Border, modifier = Modifier.padding(vertical = 4.dp))
-                
+
+                if (podeRegenerar) {
+                    MenuItemStyled(
+                        icon = Icons.Filled.Refresh,
+                        label = "Refazer geração",
+                        value = "Reprocessar todos os formatos originais",
+                        isAction = true,
+                        onClick = {
+                            showRegenerateConfirm = true
+                            showDropdown = false
+                            onMenuDismiss()
+                        }
+                    )
+                }
                 if (podeRetry) {
                     val reenviarSubtitle = when (status) {
                         DesenhoStatus.CONCLUIDO_COM_ERROS -> "Reprocessar formatos com falha"
